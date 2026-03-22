@@ -1,0 +1,35 @@
+# 管理员配置
+admin:
+  password: "admin123" # 管理员密码，首次登录后可修改
+
+# 数据库配置
+database:
+  driver: "sqlite"
+  path: "./data/app.db" # SQLite数据库文件路径
+
+# 限流配置
+rate_limit:
+  user_rpm: 60 # 单个用户每分钟最大请求数
+  default_provider_rpm: 30 # 厂商密钥默认每分钟最大请求数
+
+# 加密配置
+security:
+  encryption_key: "your-encryption-key" # 用于加密用户厂商密钥的密钥
+  jwt_secret: "your-jwt-secret" # 用于登录令牌的密钥
+
+# 超时配置
+timeout:
+  request_timeout: 5 # 请求超时时间，单位：秒
+
+# 密钥管理配置
+key_management:
+  max_retry: 1 # 密钥失败后最大重试次数
+  cool_down_period: 7200 # 密钥超限时的冷却时间，单位：秒，暂时没有实现
+  max_concurrency: 1 # 每个密钥的最大并发数，暂时没有实现
+
+
+
+# 日志配置
+logging:
+  level: "INFO"
+  format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"

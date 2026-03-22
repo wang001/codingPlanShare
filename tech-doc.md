@@ -7,7 +7,7 @@
 | 后端语言 | Python | 3.7+ | 简单易用，生态丰富，适合快速开发API服务 |
 | Web框架 | FastAPI | 0.104.1 | 高性能，自动生成API文档，支持异步处理 |
 | 数据库 | SQLite | 3.0+ | 轻量级，无需额外服务，适合Demo期使用 |
-| 缓存 | Redis | 7.0+ | 用于缓存积分数据和限流控制 |
+| 缓存 | 内存缓存 | - | 轻量级，无需额外服务，适合Demo期使用 |
 | 认证 | JWT | - | 无状态认证，便于水平扩展 |
 | 加密 | cryptography | 41.0.7 | 提供简单的加密功能，用于密钥加密 |
 | 测试 | pytest | 7.4.3 | 流行的Python测试框架，支持单元测试和集成测试 |
@@ -23,7 +23,7 @@ flowchart TD
     C --> D[数据访问层]
     C --> E[外部LLM厂商]
     D --> F[SQLite数据库]
-    C --> G[Redis缓存]
+    C --> G[内存缓存]
     H[管理后台] --> C
 ```
 
@@ -88,18 +88,15 @@ sequenceDiagram
     participant Client as 客户端
     participant API as API网关
     participant Auth as 认证服务
-    participant RateLimit as 限流服务
     participant Router as 路由服务
     participant Provider as 厂商适配器
     participant Points as 积分服务
     participant DB as 数据库
-    participant Cache as 缓存
+    participant Cache as 内存缓存
 
     Client->>API: 发送请求
     API->>Auth: 验证API密钥
     Auth-->>API: 验证结果
-    API->>RateLimit: 检查限流
-    RateLimit-->>API: 限流结果
     API->>Points: 预扣积分
     Points->>Cache: 检查积分余额
     Cache-->>Points: 积分余额
@@ -237,7 +234,6 @@ sequenceDiagram
 
 - Python 3.7+
 - SQLite 3.0+
-- Redis 7.0+ (可选，用于缓存)
 
 ### 5.2 安装步骤
 
@@ -284,9 +280,7 @@ key_management:
 # 缓存配置
 cache:
   enabled: true
-  host: "localhost"
-  port: 6379
-  db: 0
+  type: "memory"  # 内存缓存
 
 # 日志配置
 logging:
@@ -378,17 +372,16 @@ sequenceDiagram
 
 ## 7. 性能优化策略
 
-1. **缓存优化**：使用Redis缓存积分余额和API密钥信息，减少数据库访问
+1. **缓存优化**：使用内存缓存积分余额和API密钥信息，减少数据库访问
 2. **批量更新**：积分更新等高频操作采用批量异步更新，减少数据库写入次数
 3. **连接池**：使用数据库连接池，减少连接建立和关闭的开销
 4. **异步处理**：使用FastAPI的异步特性，提高并发处理能力
-5. **限流控制**：实现多级限流，防止系统过载
-6. **密钥管理**：定期清理无效密钥，优化密钥选择算法
+5. **密钥管理**：定期清理无效密钥，优化密钥选择算法
 
 ## 8. 安全措施
 
 1. **密钥加密**：厂商API密钥使用加密存储，防止明文泄露
-2. **密码哈希**：用户密码使用bcrypt哈希存储，不可反向解密
+2. **密码哈希**：用户密码使用pbkdf2_sha256哈希存储，不可反向解密
 3. **JWT认证**：使用JWT进行API认证，确保接口安全
 4. **输入验证**：对所有用户输入进行严格验证，防止注入攻击
 5. **日志审计**：记录所有敏感操作的审计日志，便于追溯
@@ -566,15 +559,15 @@ codingPlanShare/
 # requirements.txt
 fastapi==0.104.1
 uvicorn==0.24.0
-sqlalchemy==2.0.23
-pydantic==2.5.0
-pydantic-settings==2.1.0
+sqlalchemy==2.0.48
+pydantic==2.12.4
+pydantic-settings==2.12.0
 python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-redis==5.0.1
+passlib==1.7.4
 cryptography==41.0.7
 pytest==7.4.3
 httpx==0.25.2
+pyyaml==6.0.1
 ```
 
 ## 12. 部署方案

@@ -1,0 +1,12 @@
+fastapi==0.104.1
+uvicorn==0.24.0
+sqlalchemy==2.0.48
+pydantic==2.12.4
+pydantic-settings==2.12.0
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+redis==5.0.1
+cryptography==41.0.7
+pytest==7.4.3
+httpx==0.25.2
+pyyaml==6.0.1
