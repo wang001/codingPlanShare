@@ -15,7 +15,7 @@ app.include_router(keys.router, prefix="/api/v1/keys", tags=["密钥"])
 app.include_router(points.router, prefix="/api/v1/points", tags=["积分"])
 app.include_router(chat.router, prefix="/api/v1/chat", tags=["聊天"])
 app.include_router(embeddings.router, prefix="/api/v1/embeddings", tags=["嵌入"])
-app.include_router(admin.router, prefix="/admin", tags=["管理员"])
+app.include_router(admin.router, prefix="/api/admin", tags=["管理员"])
 
 @app.on_event("startup")
 async def startup_event():
