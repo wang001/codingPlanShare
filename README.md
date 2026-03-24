@@ -1,277 +1,270 @@
-# codingPlanShare - LLM API聚合计费路由器项目总结
+<div align="center">
 
-## 1. 项目概述
+# 🔀 LLM Router
 
-本项目是一个轻量级的大语言模型（LLM）API 聚合与积分计费网关，旨在解决开发者面对多厂商 LLM 接口的适配成本问题，同时通过用户闲置 API 额度共享的模式，实现低成本的模型调用服务。
+**一个轻量级的 LLM API 聚合计费网关**
 
-### 1.1 核心模式
-- 用户可将自身在各大 LLM 厂商的订阅 API 密钥托管至平台
-- 当平台使用该用户托管的密钥处理其他用户的调用请求时，密钥所有者可获得对应积分收益
-- 用户可使用积分调用平台提供的模型服务，平台从中抽取少量差价作为运营成本
+把你手里闲置的 API 额度变成收益，让大家都能低成本用上好模型。
 
-### 1.2 目标用户
-- 拥有闲置 LLM API 订阅额度的个人开发者
-- 需要低成本调用多模型服务的应用开发者
-- 小型团队的内部 AI 服务管理者
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)](https://python.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
+[![React](https://img.shields.io/badge/React-18-61dafb.svg)](https://react.dev)
 
-## 2. 功能需求
+</div>
 
-### 2.1 普通用户接口
-- **账户与认证**：用户登录、个人信息查看
-- **密钥管理**：平台密钥申请、厂商密钥托管、密钥状态管理
-- **积分管理**：积分余额查询、积分明细查询
-- **开发者服务**：统一 API 文档、调用统计、错误日志
+---
 
-### 2.2 API 网关核心功能
-- **请求路由与转发**：接收标准 OpenAI 格式请求，自动匹配底层模型厂商，参数适配，响应标准化
-- **身份与配额校验**：验证 API 密钥有效性，校验积分余额，调用频率限流
-- **积分计费逻辑**：按请求次数计费，预扣积分，成功确认，失败回滚
-- **负载均衡与key失效处理**：轮询策略选择可用密钥，自动过滤禁用/超限密钥，key失效处理，自动重试
+## 💡 这是什么？
 
-### 2.3 后端管理接口
-- **访问控制**：管理员登录
-- **用户管理**：用户创建、用户列表、用户状态管理、积分调整
-- **密钥管理**：查看所有密钥、管理密钥状态、查看密钥使用情况
-- **模型与定价管理**：模型管理、厂商管理、定价配置
-- **系统监控**：调用日志、系统状态、配置查看
+很多开发者手里都有闲置的 LLM 厂商 API 额度——充了会员用不完、公司采购了没怎么用。与此同时，另一批开发者需要调用各种模型，但不想对接十几家厂商的不同接口。
 
-## 3. 技术栈
+**LLM Router** 就是连接这两类人的桥梁：
 
-### 3.1 后端技术栈
-- **语言**：Python 3.7+
-- **Web框架**：FastAPI 0.104.1
-- **数据库**：SQLite 3.0+
-- **缓存**：内存缓存
-- **认证**：JWT
-- **加密**：cryptography 41.0.7
-- **测试**：pytest 7.4.3
+- **托管者**：把你的厂商密钥托管到平台，每次被调用时自动获得积分收益
+- **调用者**：用一个统一的 OpenAI 兼容接口，消耗积分调用多家厂商的模型
+- **平台**：从中抽取少量差价维持运营
 
-### 3.2 前端技术栈
-- **框架**：React 18.2.0
-- **构建工具**：Vite 5.0.8
-- **状态管理**：Redux Toolkit 2.0.1
-- **UI组件库**：Ant Design 5.12.8
-- **路由**：React Router 6.20.1
-- **HTTP客户端**：Axios 1.6.2
-- **数据可视化**：ECharts 5.4.3
-- **表单处理**：Formik 2.4.5
+整个系统完全开源，你可以自己搭一个给团队用，也可以对外运营。
 
-## 4. 系统架构
+## ✨ 核心特性
 
-### 4.1 后端架构
-- **API网关层**：处理HTTP请求，路由分发
-- **业务逻辑层**：实现核心功能，如认证、积分管理、密钥管理、路由服务
-- **数据访问层**：处理数据库操作，缓存管理
-- **厂商适配层**：适配不同厂商的API接口
+- 🔌 **OpenAI 兼容接口** — 无需改动现有代码，把 `base_url` 换成自己部署的地址就行
+- 🏦 **积分计费** — 预扣 + 确认的双阶段计费，失败自动回滚，不多扣一分
+- 🔑 **密钥池路由** — 自动选择可用密钥，失效自动重试，对调用方透明
+- 🛡️ **SSRF 防护** — 厂商 URL 白名单机制，只允许访问已知的合法厂商地址
+- 📊 **管理后台** — 用户管理、密钥管理、积分调整、调用日志，全套可视化
+- 📱 **响应式 UI** — 手机和电脑都能正常使用
 
-### 4.2 前端架构
-- **路由层**：处理页面导航，权限控制
-- **页面组件**：实现用户界面，如登录页、个人中心、积分管理、密钥管理
-- **业务组件**：实现可复用的业务逻辑组件
-- **API服务**：封装与后端的通信
-- **状态管理**：管理应用状态，如用户信息、积分余额、密钥列表
+## 🏗️ 支持的厂商
 
-## 5. 数据库设计
+| Provider | 模型示例 | 调用前缀 |
+|----------|----------|----------|
+| ModelScope | moonshotai/Kimi-K2.5、Qwen 系列等 | `modelscope/` |
+| 智谱 AI | GLM-4 | `zhipu/` |
+| MiniMax | abab6.5 | `minimax/` |
+| 阿里云百炼 | qwen-turbo | `alibaba/` |
+| 腾讯混元 | hunyuan-pro | `tencent/` |
+| 百度千帆 | ernie-4.0 | `baidu/` |
+| DeepSeek | deepseek-chat | `deepseek/` |
+| SiliconFlow | 多种开源模型 | `siliconflow/` |
 
-### 5.1 核心表结构
-- **users**：用户表，存储用户信息和积分余额
-- **api_keys**：密钥表，存储平台调用密钥和厂商密钥
-- **point_logs**：积分明细表，记录积分变动
-- **call_logs**：调用日志表，记录API调用情况
-- **system_config**：系统配置表，存储系统配置项
+> 调用示例：`model: "modelscope/moonshotai/Kimi-K2.5"` — 第一段是 provider，后面是真实模型名。
 
-### 5.2 缓存设计
-- **user:balance:{user_id}**：缓存用户积分余额
-- **api_key:{key}**：缓存API密钥信息
-- **rate_limit:user:{user_id}**：用户请求限流计数
-- **rate_limit:key:{key_id}**：密钥请求限流计数
-- **available_keys:{provider}**：缓存可用的厂商密钥
+## 🚀 快速开始
 
-## 6. API接口设计
+### 环境要求
 
-### 6.1 普通用户接口
-| 路径 | 方法 | 功能 |
-|------|------|------|
-| /api/v1/auth/login | POST | 用户登录 |
-| /api/v1/users/me | GET | 获取个人信息 |
-| /api/v1/keys | POST | 创建API密钥 |
-| /api/v1/keys | GET | 获取密钥列表 |
-| /api/v1/keys/{key_id} | PUT | 更新密钥状态 |
-| /api/v1/keys/{key_id} | DELETE | 删除密钥 |
-| /api/v1/points | GET | 获取积分余额 |
-| /api/v1/point-logs | GET | 获取积分明细 |
-| /api/v1/chat/completions | POST | 聊天完成接口 |
-| /api/v1/embeddings | POST | 嵌入接口 |
+- Python 3.8+
+- Node.js 16+
 
-### 6.2 后端管理接口
-| 路径 | 方法 | 功能 |
-|------|------|------|
-| /admin/auth/login | POST | 管理员登录 |
-| /admin/users | GET | 管理用户列表 |
-| /admin/users | POST | 创建用户 |
-| /admin/users/{user_id} | PUT | 更新用户状态 |
-| /admin/users/{user_id} | DELETE | 删除用户 |
-| /admin/points | POST | 调整用户积分 |
-| /admin/keys | GET | 查看所有密钥 |
-| /admin/keys/{key_id} | PUT | 管理密钥状态 |
-| /admin/keys/{key_id} | DELETE | 删除密钥 |
-| /admin/models | GET | 管理模型列表 |
-| /admin/models | POST | 创建模型 |
-| /admin/models/{model_id} | PUT | 更新模型信息 |
-| /admin/models/{model_id} | DELETE | 删除模型 |
-| /admin/logs | GET | 查看调用日志 |
-| /admin/system | GET | 查看系统状态 |
+### 1. 克隆仓库
 
-## 7. 核心流程
+```bash
+git clone https://github.com/wang001/codingPlanShare.git
+cd codingPlanShare
+```
 
-### 7.1 模型调用流程
-1. 客户端发送Chat Completion请求
-2. API网关验证API密钥
-3. 积分服务预扣积分
-4. 路由服务选择可用密钥
-5. 厂商适配器适配参数并调用厂商API
-6. 厂商适配器标准化响应
-7. 积分服务确认扣费
-8. API网关返回响应
+### 2. 启动后端
 
-### 7.2 密钥失效处理流程
-1. 选择密钥
-2. 调用厂商API
-3. 判断调用是否成功
-4. 若失败，判断密钥失效类型
-5. 若为超限，标记密钥为超限
-6. 若为删除，标记密钥为无效
-7. 若有可用密钥，重试下一个密钥
-8. 若无可用密钥，返回错误
+```bash
+# 安装依赖（国内用户推荐加镜像源）
+pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
-### 7.3 积分更新流程
-1. 请求预扣积分
-2. 获取用户积分余额
-3. 检查余额是否足够
-4. 若足够，预扣积分
-5. 处理业务逻辑
-6. 确认扣费
-7. 更新积分缓存
-8. 异步更新数据库
+# 初始化数据库
+python init_db.py
 
-## 8. 部署与配置
+# 启动服务（默认端口 3000）
+uvicorn app.main:app --host 0.0.0.0 --port 3000
+```
 
-### 8.1 后端部署
-- **环境要求**：Python 3.7+, SQLite 3.0+
-- **安装步骤**：
-  1. 克隆代码仓库
-  2. 创建虚拟环境：`python -m venv venv`
-  3. 激活虚拟环境：
-     - Windows: `venv\Scripts\activate`
-     - Linux/Mac: `source venv/bin/activate`
-  4. 安装依赖：`pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/`
-  5. 初始化数据库：`python init_db.py`
-  6. 启动服务：`uvicorn app.main:app --host 0.0.0.0 --port 3000`
-- **配置文件**：config.yaml，包含管理员配置、数据库配置、加密配置、超时配置、密钥管理配置、缓存配置、日志配置
+访问 http://localhost:3000/docs 查看自动生成的 API 文档。
 
-### 8.2 前端部署
-- **环境要求**：Node.js 16+
-- **安装步骤**：
-  1. 进入前端目录：`cd frontend`
-  2. 安装依赖：`npm install --registry=https://registry.npmmirror.com`
-  3. 开发模式启动：`npm run dev`
-  4. 生产环境构建：`npm run build`
-  5. 预览生产构建：`npm run preview`
-- **配置文件**：.env，包含API地址、环境配置等
+### 3. 启动前端
 
-## 9. 测试计划
+```bash
+cd frontend
 
-### 9.1 后端测试
-- **单元测试**：认证服务、积分服务、密钥管理服务、路由服务、厂商适配器、限流服务、缓存服务
-- **集成测试**：模型调用流程、积分计费逻辑、密钥失效处理、管理后台功能
-- **性能测试**：并发测试、缓存性能测试、数据库性能测试
+# 安装依赖（国内用户推荐加镜像源）
+npm install --include=dev --registry https://registry.npmmirror.com
 
-### 9.2 前端测试
-- **单元测试**：组件测试、服务测试、hooks测试
-- **集成测试**：页面流程测试、表单测试、数据可视化测试
-- **端到端测试**：完整用户流程测试
+# 开发模式启动
+npm run dev
+```
 
-## 10. 安全性考虑
+访问 http://localhost:5173 打开管理界面。
 
-### 10.1 后端安全
-- **密钥加密**：厂商API密钥使用加密存储
-- **密码哈希**：用户密码使用pbkdf2_sha256哈希存储
-- **JWT认证**：使用JWT进行API认证
-- **输入验证**：对所有用户输入进行严格验证
-- **日志审计**：记录所有敏感操作的审计日志
-- **HTTPS**：生产环境使用HTTPS加密传输
+### 4. 初始登录
 
-### 10.2 前端安全
-- **JWT令牌安全存储**：使用localStorage或sessionStorage存储JWT令牌
-- **API请求加密**：使用HTTPS加密传输
-- **输入验证**：对所有用户输入进行严格验证
-- **防止XSS攻击**：使用React的内置XSS防护
-- **防止CSRF攻击**：使用JWT令牌进行API认证
+| 角色 | 方式 |
+|------|------|
+| 普通用户 | 邮箱 `admin@example.com`，密码 `admin123` |
+| 管理员 | 管理员密码 `admin123`（在登录页切换到「管理员登录」Tab） |
 
-## 11. 性能优化
+> ⚠️ **首次部署后请立即修改 `config.yaml` 中的密码和密钥！**
 
-### 11.1 后端优化
-- **缓存优化**：使用内存缓存积分余额和API密钥信息
-- **批量更新**：积分更新等高频操作采用批量异步更新
-- **连接池**：使用数据库连接池
-- **异步处理**：使用FastAPI的异步特性
-- **密钥管理**：定期清理无效密钥
+### 5. 开始使用
 
-### 11.2 前端优化
-- **组件懒加载**：使用React.lazy和Suspense
-- **代码分割**：使用动态import
-- **缓存策略**：缓存API响应
-- **图片优化**：使用适当的图片格式和大小
-- **减少HTTP请求**：合并请求，使用HTTP/2
+1. 以管理员身份登录，创建用户
+2. 以用户身份登录，在「密钥」页面托管你的厂商 API 密钥（如 ModelScope 密钥）
+3. 创建一个平台调用密钥
+4. 用该平台密钥调用 API：
 
-## 12. 项目结构
+```python
+from openai import OpenAI
 
-### 12.1 后端结构
+client = OpenAI(
+    api_key="你的平台密钥",
+    base_url="http://localhost:3000/api/v1/chat",
+)
+
+response = client.chat.completions.create(
+    model="modelscope/moonshotai/Kimi-K2.5",
+    messages=[{"role": "user", "content": "你好！"}]
+)
+print(response.choices[0].message.content)
+```
+
+> **注意**：请求头使用 `api-key` 而非 `Authorization`（标准 OpenAI SDK 会自动处理）。
+
+---
+
+## ⚙️ 配置说明
+
+编辑 `config.yaml` 完成个性化配置：
+
+```yaml
+# 管理员配置
+admin:
+  password: "your-strong-password"   # 修改为强密码
+
+# 加密配置（生产环境必须修改）
+security:
+  encryption_key: "your-32-char-encryption-key"
+  jwt_secret: "your-jwt-secret"
+
+# 数据库
+database:
+  driver: "sqlite"
+  path: "./data/app.db"
+
+# 限流
+rate_limit:
+  user_rpm: 60          # 单用户每分钟最大请求数
+  default_provider_rpm: 30
+
+# 超时
+timeout:
+  request_timeout: 30   # 单位：秒
+```
+
+---
+
+## 🐳 Docker 部署
+
+```bash
+docker build -t llm-router .
+docker run -d \
+  -p 3000:3000 \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/config.yaml:/app/config.yaml \
+  llm-router
+```
+
+---
+
+## 📁 项目结构
+
 ```
 codingPlanShare/
 ├── app/
-│   ├── api/
-│   ├── services/
-│   ├── providers/
-│   ├── models/
-│   ├── schemas/
-│   ├── utils/
-│   ├── config/
-│   ├── db/
-│   └── main.py
-├── tests/
-├── data/
-├── config.yaml
-├── requirements.txt
-├── init_db.py
-└── README.md
+│   ├── api/            # HTTP 接口层（auth/users/keys/points/chat/admin）
+│   ├── services/       # 业务逻辑（认证/积分/密钥/路由/管理）
+│   ├── providers/      # 厂商适配器（统一 OpenAI 兼容格式）
+│   ├── models/         # 数据库模型
+│   ├── schemas/        # 请求/响应结构
+│   ├── utils/          # 工具（加密/缓存/后台任务）
+│   └── main.py         # 应用入口
+├── frontend/
+│   └── src/
+│       ├── api/        # 接口请求封装（含 axios 拦截器）
+│       ├── layouts/    # 用户端/管理员端布局
+│       └── pages/      # 页面组件
+├── config.yaml         # 配置文件
+├── init_db.py          # 数据库初始化
+└── requirements.txt
 ```
 
-### 12.2 前端结构
-```
-frontend/
-├── public/
-├── src/
-│   ├── assets/
-│   ├── components/
-│   ├── hooks/
-│   ├── pages/
-│   ├── services/
-│   ├── store/
-│   ├── types/
-│   ├── utils/
-│   ├── App.tsx
-│   ├── main.tsx
-│   └── routes.tsx
-├── .env
-├── package.json
-└── vite.config.ts
-```
+---
 
-## 13. 总结
+## 🔌 API 接口速览
 
-本项目是一个功能完整、架构清晰的LLM API聚合计费路由器，通过统一接口、积分计费、密钥管理等核心功能，为开发者提供了低成本、高效率的模型调用服务。后端采用Python + FastAPI + SQLite的技术栈，前端采用React + Ant Design + Redux Toolkit的技术栈，两者紧密配合，形成了一个完整的解决方案。
+### 用户端
 
-项目设计考虑了安全性、性能、可扩展性等因素，适合作为Demo版本快速部署和测试。同时，项目结构清晰，代码组织合理，为后续的功能扩展和性能优化预留了空间。
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/login` | 用户登录 |
+| GET | `/api/v1/users/me` | 获取当前用户信息 |
+| GET/POST | `/api/v1/keys` | 密钥列表 / 创建密钥 |
+| PUT/DELETE | `/api/v1/keys/{id}` | 更新 / 删除密钥 |
+| GET | `/api/v1/points` | 积分余额 |
+| GET | `/api/v1/points/logs` | 积分明细 |
+| POST | `/api/v1/chat/completions` | 对话接口（需 `api-key` header） |
+| POST | `/api/v1/embeddings` | 嵌入接口 |
 
-通过本项目的实施，开发者可以更方便地调用多厂商的LLM API，降低模型调用成本，提高开发效率。
+### 管理员端
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/admin/login` | 管理员登录 |
+| GET/POST | `/api/admin/users` | 用户列表 / 创建用户 |
+| PUT | `/api/admin/users/{id}` | 更新用户状态 |
+| POST | `/api/admin/points` | 调整用户积分 |
+| GET | `/api/admin/keys` | 所有密钥列表 |
+| PUT/DELETE | `/api/admin/keys/{id}` | 管理密钥状态 |
+| GET | `/api/admin/logs` | 调用日志 |
+
+---
+
+## 🛡️ 安全说明
+
+- 厂商 API 密钥使用 `cryptography` 库加密存储，明文不落库
+- 用户密码使用 `pbkdf2_sha256` 哈希，不可逆
+- 厂商接口地址白名单机制，杜绝 SSRF 攻击
+- 生产环境请务必：① 修改所有默认密码和密钥 ② 启用 HTTPS
+
+---
+
+## 🗺️ Roadmap
+
+- [ ] 按 token 计费（当前按次计费）
+- [ ] 更多厂商支持（Anthropic、Google 等）
+- [ ] 用户注册功能
+- [ ] 积分充值 / 提现流程
+- [ ] 流式响应支持（SSE）
+- [ ] 速率限制优化
+- [ ] 多节点部署支持
+
+---
+
+## 🤝 贡献
+
+欢迎提 Issue 和 PR！
+
+1. Fork 本仓库
+2. 创建特性分支：`git checkout -b feature/amazing-feature`
+3. 提交改动：`git commit -m 'feat: add amazing feature'`
+4. 推送分支：`git push origin feature/amazing-feature`
+5. 提交 Pull Request
+
+---
+
+## 📄 License
+
+MIT License — 自由使用、修改和分发。
+
+---
+
+<div align="center">
+  <sub>如果这个项目对你有帮助，欢迎点一个 ⭐</sub>
+</div>
