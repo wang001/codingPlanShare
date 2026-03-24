@@ -4,8 +4,15 @@ admin:
 
 # 数据库配置
 database:
-  driver: "sqlite"
-  path: "./data/app.db" # SQLite数据库文件路径
+  driver: "mysql"
+  host: "rm-uf6w3mxrrl5dgn45lto.rwlb.rds.aliyuncs.com"
+  port: 3306
+  user: "open_claw"
+  password: "78k%x^tRq7CS"
+  name: "coding_plan_share"
+  pool_size: 20
+  max_overflow: 40
+  pool_recycle: 1800
 
 # 限流配置
 rate_limit:
