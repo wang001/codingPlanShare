@@ -311,7 +311,338 @@ logging:
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ```
 
-## 6. 关键流程设计
+## 6. API 接口文档
+
+> 所有接口均以 JSON 格式收发数据。时间戳字段均为 Unix 秒级整数。
+> 认证方式：用户端接口在 Header 中携带 `Authorization: Bearer <user_token>`；
+> 管理员接口在 Header 中携带 `Authorization: Bearer <admin_token>`；
+> 对话接口（`/api/v1/chat`）使用 `api-key: <platform_key>` Header。
+
+---
+
+### 6.1 认证接口
+
+#### POST `/api/v1/auth/login` — 用户登录
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| email | string | ✅ | 用户邮箱 |
+| password | string | ✅ | 用户密码 |
+
+**响应体**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| access_token | string | JWT，后续请求放入 `Authorization: Bearer` header |
+| token_type | string | 固定值 `"bearer"` |
+| user_id | int | 用户 ID |
+| username | string | 用户名 |
+
+---
+
+#### POST `/api/v1/auth/admin/login` — 管理员登录
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| password | string | ✅ | 管理员密码（见 `config.yaml` 中 `admin.password`） |
+
+**响应体**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| access_token | string | 管理员 JWT，后续管理接口放入 `Authorization: Bearer` header |
+| token_type | string | 固定值 `"bearer"` |
+
+---
+
+### 6.2 用户接口（需要用户 JWT）
+
+#### GET `/api/v1/users/me` — 获取当前用户信息
+
+**响应体**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | int | 用户 ID |
+| username | string | 用户名 |
+| email | string | 邮箱 |
+| balance | int | 积分余额（单位：分） |
+| status | int | 用户状态，见[用户状态枚举](#用户状态枚举) |
+| created_at | int | 注册时间戳（Unix 秒） |
+
+---
+
+### 6.3 密钥接口（需要用户 JWT）
+
+#### GET `/api/v1/keys` — 获取密钥列表
+
+**响应体**（数组，每项字段如下）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | int | 密钥 ID |
+| user_id | int | 所属用户 ID |
+| key_type | int | 密钥类型，见[密钥类型枚举](#密钥类型枚举) |
+| provider | string \| null | 厂商标识（仅厂商密钥有值），见[厂商枚举](#厂商枚举) |
+| name | string | 密钥名称（用户自定义） |
+| status | int | 密钥状态，见[密钥状态枚举](#密钥状态枚举) |
+| used_count | int | 累计被调用次数 |
+| last_used_at | int \| null | 最后使用时间戳（Unix 秒），未使用过则为 null |
+| created_at | int | 创建时间戳（Unix 秒） |
+| encrypted_key | string | 平台密钥：明文 key 值；厂商密钥：加密后的密文 |
+
+---
+
+#### POST `/api/v1/keys` — 创建密钥
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| name | string | ✅ | 密钥名称 |
+| key_type | int | ✅ | `1`=平台调用密钥，`2`=厂商托管密钥 |
+| provider | string | 厂商密钥必填 | 厂商标识，见[厂商枚举](#厂商枚举)，须在白名单内 |
+| encrypted_key | string | 厂商密钥必填 | 厂商原始 API Key，服务端加密存储 |
+
+> 安全：`provider` 须在系统白名单（`PROVIDER_BASE_URLS`）内，否则返回 400，防止 SSRF。
+
+---
+
+#### PUT `/api/v1/keys/{key_id}` — 更新密钥
+
+**请求体**（字段均可选）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| name | string | 新名称 |
+| status | int | 新状态，见[密钥状态枚举](#密钥状态枚举) |
+
+---
+
+#### DELETE `/api/v1/keys/{key_id}` — 删除密钥
+
+软删除，将密钥 `status` 置为 `1`（已删除）。无请求体，响应 `{"message": "密钥已删除"}`。
+
+---
+
+### 6.4 积分接口（需要用户 JWT）
+
+#### GET `/api/v1/points` — 获取积分余额
+
+**响应体**
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| balance | int | 当前积分余额（单位：分） |
+
+---
+
+#### GET `/api/v1/points/logs` — 获取积分明细
+
+**Query 参数**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| limit | int | 100 | 返回条数上限 |
+| offset | int | 0 | 分页偏移量 |
+
+**响应体**（数组，每项字段如下）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | int | 记录 ID |
+| user_id | int | 用户 ID |
+| amount | int | 变动量（正数=增加，负数=扣减） |
+| type | int | 变动类型，见[积分变动类型枚举](#积分变动类型枚举) |
+| related_key_id | int \| null | 关联密钥 ID |
+| model | string \| null | 关联模型名称 |
+| remark | string \| null | 备注 |
+| created_at | int | 时间戳（Unix 秒） |
+
+---
+
+### 6.5 对话接口
+
+#### POST `/api/v1/chat/completions` — 聊天完成
+
+> ⚠️ 此接口使用 `api-key: <平台密钥>` Header 认证，**不使用** JWT。
+> 密钥所属用户须处于正常状态（`status=1`），否则返回 401。
+
+**请求体**（OpenAI Chat Completions 兼容格式）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model | string | ✅ | 模型名称，格式 `provider/真实模型名`，例如 `modelscope/moonshotai/Kimi-K2.5`、`mock/test` |
+| messages | array | ✅ | 消息列表，每项包含 `role`（`user`/`assistant`/`system`）和 `content`（string） |
+| temperature | float | | 采样温度，默认 `0.7` |
+| max_tokens | int | | 最大生成 token 数，默认 `1000` |
+| top_p | float | | nucleus sampling，默认 `1.0` |
+| frequency_penalty | float | | 频率惩罚，默认 `0.0` |
+| presence_penalty | float | | 存在惩罚，默认 `0.0` |
+
+**响应体**（OpenAI Chat Completions 兼容格式）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | string | 本次响应唯一 ID |
+| object | string | 固定值 `"chat.completion"` |
+| created | int | 创建时间戳（Unix 秒） |
+| model | string | 实际使用的模型名 |
+| choices | array | 结果列表，每项包含 `index`、`message`（含 `role` 和 `content`）、`finish_reason` |
+| usage | object | token 用量：`prompt_tokens`、`completion_tokens`、`total_tokens` |
+
+---
+
+### 6.6 管理员接口（需要管理员 JWT）
+
+#### GET `/api/admin/users` — 用户列表
+
+响应体同 `/api/v1/users/me`，返回所有用户数组。
+
+---
+
+#### POST `/api/admin/users` — 创建用户
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| username | string | ✅ | 用户名（唯一） |
+| email | string | ✅ | 邮箱（唯一） |
+| password | string | ✅ | 初始密码 |
+
+---
+
+#### PUT `/api/admin/users/{user_id}` — 更新用户状态
+
+**Query 参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| status | int | `0`=禁用，`1`=正常。禁用后该用户所有平台密钥立即失效（API 调用返回 401） |
+
+---
+
+#### POST `/api/admin/points` — 调整用户积分
+
+**请求体**
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| user_id | int | ✅ | 目标用户 ID |
+| amount | int | ✅ | 调整量（正数=增加，负数=扣减） |
+| remark | string | | 调整原因备注 |
+
+---
+
+#### GET `/api/admin/keys` — 所有密钥列表
+
+响应体同用户密钥列表，返回所有用户的密钥数组（已删除的已过滤）。
+
+---
+
+#### PUT `/api/admin/keys/{key_id}` — 更新密钥状态
+
+**Query 参数**
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| status | int | 见[密钥状态枚举](#密钥状态枚举) |
+
+---
+
+#### DELETE `/api/admin/keys/{key_id}` — 删除密钥
+
+软删除，将 `status` 置为 `1`。
+
+---
+
+#### GET `/api/admin/logs` — 调用日志
+
+**Query 参数**
+
+| 参数 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| limit | int | 100 | 返回条数上限 |
+| offset | int | 0 | 分页偏移量 |
+
+**响应体**（数组，每项字段如下）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| id | int | 日志 ID |
+| user_id | int | 调用用户 ID |
+| provider_key_id | int \| null | 实际使用的厂商密钥 ID |
+| model | string \| null | 调用的模型名（含 provider 前缀） |
+| status | int | `0`=失败，`1`=成功 |
+| error_msg | string \| null | 错误信息（失败时） |
+| ip | string \| null | 调用方 IP |
+| created_at | int | 时间戳（Unix 秒） |
+
+---
+
+### 6.7 枚举值说明
+
+#### 用户状态枚举
+
+| 值 | 含义 | 影响 |
+|----|------|------|
+| 0 | 已禁用 | 该用户无法登录；其名下所有平台密钥调用返回 401 |
+| 1 | 正常 | 正常使用 |
+
+#### 密钥类型枚举
+
+| 值 | 含义 | 说明 |
+|----|------|------|
+| 1 | 平台调用密钥 | 用于调用本平台对话接口（`api-key` header）；由系统自动生成 |
+| 2 | 厂商托管密钥 | 用户将自己的厂商 API Key 托管到平台；由用户提供原始 key，服务端加密存储 |
+
+#### 密钥状态枚举
+
+| 值 | 含义 | 对调用的影响 |
+|----|------|-------------|
+| 0 | 正常 | 可正常被路由选中 |
+| 1 | 已删除 | 不会被选中；列表接口通常过滤此状态 |
+| 2 | 已禁用 | 不会被选中；可由管理员恢复 |
+| 3 | 超限 | 厂商返回额度超限错误时自动标记；冷却后可恢复 |
+| 4 | 无效 | 厂商返回认证失败时自动标记；需用户更换 key |
+
+#### 积分变动类型枚举
+
+| 值 | 含义 | 触发场景 |
+|----|------|---------|
+| 1 | 调用消耗 | 用户使用平台密钥调用对话接口，扣减积分 |
+| 2 | 托管收益 | 用户的厂商密钥被平台调用，自动获得积分奖励 |
+| 3 | 管理员调整 | 管理员手动通过 `/api/admin/points` 增减积分 |
+| 4 | 平台收入 | 平台抽取的差价（预留，当前版本未启用） |
+
+#### 厂商枚举（provider 白名单）
+
+| provider 值 | 厂商 | 对应 base_url | mock 可用 |
+|-------------|------|---------------|-----------|
+| `modelscope` | 魔搭社区 | `https://api-inference.modelscope.cn/v1` | ❌ |
+| `zhipu` | 智谱 AI | `https://open.bigmodel.cn/api/paas/v4` | ❌ |
+| `minimax` | MiniMax | `https://api.minimax.chat/v1` | ❌ |
+| `alibaba` | 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | ❌ |
+| `tencent` | 腾讯混元 | `https://api.hunyuan.cloud.tencent.com/v1` | ❌ |
+| `baidu` | 百度千帆 | `https://qianfan.baidubce.com/v2` | ❌ |
+| `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | ❌ |
+| `siliconflow` | SiliconFlow | `https://api.siliconflow.cn/v1` | ❌ |
+| `mock` | Mock（测试用）| 不发起真实请求 | ✅ |
+
+> `mock` provider 的 `encrypted_key` 格式控制行为：
+> - `mock` → 正常响应
+> - `mock:slow` → 延迟 2 秒响应
+> - `mock:fail` → 总是返回错误
+> - `mock:fail_rate=0.3` → 30% 概率失败
+
+---
+
+## 7. 关键流程设计
 
 ### 6.1 模型调用流程
 
@@ -393,7 +724,7 @@ sequenceDiagram
     end
 ```
 
-## 7. 性能优化策略
+## 8. 性能优化策略
 
 1. **缓存优化**：使用内存缓存积分余额和API密钥信息，减少数据库访问
 2. **批量更新**：积分更新等高频操作采用批量异步更新，减少数据库写入次数
@@ -401,7 +732,7 @@ sequenceDiagram
 4. **异步处理**：使用FastAPI的异步特性，提高并发处理能力
 5. **密钥管理**：定期清理无效密钥，优化密钥选择算法
 
-## 8. 安全措施
+## 9. 安全措施
 
 1. **密钥加密**：厂商API密钥使用加密存储，防止明文泄露
 2. **密码哈希**：用户密码使用pbkdf2_sha256哈希存储，不可反向解密
@@ -410,7 +741,7 @@ sequenceDiagram
 5. **日志审计**：记录所有敏感操作的审计日志，便于追溯
 6. **HTTPS**：生产环境使用HTTPS加密传输
 
-## 9. 测试计划
+## 10. 测试计划
 
 ### 9.1 单元测试
 
