@@ -40,17 +40,7 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
         )
     
     # 路由请求到合适的厂商
-    logger.info(f"Request model: {request.model}")
-    logger.info(f"Request messages: {request.messages}")
-    
-    # 测试model_dump
     model_dump_result = request.model_dump()
-    logger.info(f"Model dump result: {model_dump_result}")
-    logger.info(f"Messages type: {type(model_dump_result['messages'])}")
-    if model_dump_result['messages']:
-        logger.info(f"First message type: {type(model_dump_result['messages'][0])}")
-        logger.info(f"First message: {model_dump_result['messages'][0]}")
-    
     route_result = RouterService.route_request(db, request.model, model_dump_result)
     if not route_result:
         # 回滚积分
@@ -65,14 +55,8 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
     key_id = route_result['key_id']
     api_key = route_result['key']
     
-    logger.info(f"Route result: {route_result}")
-    logger.info(f"Provider: {provider}")
-    logger.info(f"Key ID: {key_id}")
-    logger.info(f"Request data: {route_result['request']}")
-    logger.info(f"Messages in request: {route_result['request']['messages']}")
-    if route_result['request']['messages']:
-        logger.info(f"First message type in request: {type(route_result['request']['messages'][0])}")
-    
+    logger.info(f"Routing to provider={provider} key_id={key_id} model={request.model}")
+
     # 创建厂商适配器实例
     provider_instance = RouterService.create_provider_instance(provider, api_key)
     if not provider_instance:
@@ -85,15 +69,12 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
     
     try:
         # 调用厂商API
-        logger.info("Calling provider chat_completion...")
         response = provider_instance.chat_completion(
             model=route_result['request']['model'],
             messages=route_result['request']['messages'],
             temperature=route_result['request']['temperature'],
             max_tokens=route_result['request']['max_tokens']
         )
-        logger.info(f"Provider response: {response}")
-        
         # 更新密钥使用情况
         KeyService.update_key_usage(db, key_id)
         
@@ -132,7 +113,7 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
         max_retry = settings.key_management.get('max_retry', 1)
         
         for attempt in range(max_retry):
-            logger.info(f"Retrying with another key, attempt {attempt + 1}")
+            logger.warning(f"Retrying with another key, attempt {attempt + 1}")
             # 路由请求到合适的厂商（排除当前失败的密钥）
             route_result = RouterService.route_request(db, request.model, model_dump_result)
             if not route_result:
@@ -150,15 +131,12 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
             
             try:
                 # 调用厂商API
-                logger.info("Calling provider chat_completion with new key...")
                 response = provider_instance.chat_completion(
                     model=route_result['request']['model'],
                     messages=route_result['request']['messages'],
                     temperature=route_result['request']['temperature'],
                     max_tokens=route_result['request']['max_tokens']
                 )
-                logger.info(f"Provider response with new key: {response}")
-                
                 # 更新密钥使用情况
                 KeyService.update_key_usage(db, key_id)
                 
