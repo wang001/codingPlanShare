@@ -10,7 +10,7 @@ request.interceptors.request.use(
   (config) => {
     // 判断是管理员路由还是普通用户路由
     const url = config.url || ''
-    if (url.startsWith('/admin')) {
+    if (url.startsWith('/api/admin')) {
       const adminToken = localStorage.getItem('admin_token')
       if (adminToken) {
         config.headers.Authorization = `Bearer ${adminToken}`
@@ -32,7 +32,7 @@ request.interceptors.response.use(
   (error) => {
     if (error.response?.status === 401) {
       const url = error.config?.url || ''
-      if (url.startsWith('/admin')) {
+      if (url.startsWith('/api/admin')) {
         localStorage.removeItem('admin_token')
         window.location.href = '/login'
         message.error('管理员会话已过期，请重新登录')
