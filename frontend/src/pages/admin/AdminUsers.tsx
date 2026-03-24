@@ -78,11 +78,11 @@ const AdminUsers: React.FC = () => {
   }
 
   const handleToggleStatus = async (user: User) => {
-    const newStatus: 0 | 1 = user.status === 0 ? 1 : 0
+    const newStatus: 0 | 1 = user.status === 1 ? 0 : 1  // 1=正常→0=禁用，0=禁用→1=正常
     setActionLoading(user.id)
     try {
       await adminUpdateUserStatus(user.id, newStatus)
-      message.success(newStatus === 0 ? '已启用用户' : '已禁用用户')
+      message.success(newStatus === 1 ? '已启用用户' : '已禁用用户')
       fetchUsers()
     } catch {
       message.error('操作失败')
@@ -149,7 +149,7 @@ const AdminUsers: React.FC = () => {
       key: 'status',
       width: 80,
       render: (status: number) => (
-        <Tag color={status === 0 ? 'success' : 'error'}>{getUserStatusLabel(status)}</Tag>
+        <Tag color={status === 1 ? 'success' : 'error'}>{getUserStatusLabel(status)}</Tag>
       ),
     },
     {
@@ -174,13 +174,13 @@ const AdminUsers: React.FC = () => {
           </Button>
           <Button
             size="small"
-            type={record.status === 0 ? 'default' : 'primary'}
-            danger={record.status === 0}
-            icon={record.status === 0 ? <StopOutlined /> : <CheckCircleOutlined />}
+            type={record.status === 1 ? 'default' : 'primary'}
+            danger={record.status === 1}
+            icon={record.status === 1 ? <StopOutlined /> : <CheckCircleOutlined />}
             loading={actionLoading === record.id}
             onClick={() => handleToggleStatus(record)}
           >
-            {record.status === 0 ? '禁用' : '启用'}
+            {record.status === 1 ? '禁用' : '启用'}
           </Button>
         </Space>
       ),
