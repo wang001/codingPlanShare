@@ -5,6 +5,22 @@ from app.services.key_service import KeyService
 from app.utils.cache import cache
 from app.config.settings import settings
 
+# ============================================================
+# 厂商白名单：provider 名称 → base_url
+# 安全策略：只允许访问此处登记的已知厂商地址，防止 SSRF。
+# 新增厂商时在此处添加，未登记的 provider 创建密钥时会被拒绝。
+# ============================================================
+PROVIDER_BASE_URLS: Dict[str, str] = {
+    "modelscope": "https://api-inference.modelscope.cn/v1",
+    "zhipu":      "https://open.bigmodel.cn/api/paas/v4",
+    "minimax":    "https://api.minimax.chat/v1",
+    "alibaba":    "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "tencent":    "https://api.hunyuan.cloud.tencent.com/v1",
+    "baidu":      "https://qianfan.baidubce.com/v2",
+    "deepseek":   "https://api.deepseek.com/v1",
+    "siliconflow":"https://api.siliconflow.cn/v1",
+}
+
 class RouterService:
     @staticmethod
     def get_provider_from_model(model: str) -> tuple:
@@ -106,75 +122,29 @@ class RouterService:
 
     @staticmethod
     def adapt_request(provider: str, model: str, request_data: Dict[str, Any], api_key: str) -> Dict[str, Any]:
-        """适配请求参数到厂商API格式"""
-        # 根据不同厂商适配参数
-        if provider == 'minimax':
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        elif provider == 'zhipu':
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        elif provider == 'alibaba':
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        elif provider == 'tencent':
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        elif provider == 'baidu':
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        elif provider == 'modelscope':
-            return {
-                'base_url': 'https://api-inference.modelscope.cn/v1',
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
-        else:
-            # 默认适配
-            return {
-                'model': model,
-                'messages': request_data.get('messages', []),
-                'temperature': request_data.get('temperature', 0.7),
-                'max_tokens': request_data.get('max_tokens', 1000),
-                'api_key': api_key
-            }
+        """适配请求参数到厂商 API 格式（统一 OpenAI 兼容格式，base_url 从白名单取）"""
+        return {
+            'base_url': PROVIDER_BASE_URLS.get(provider.lower(), ""),
+            'model': model,
+            'messages': request_data.get('messages', []),
+            'temperature': request_data.get('temperature', 0.7),
+            'max_tokens': request_data.get('max_tokens', 1000),
+            'api_key': api_key,
+        }
+
+    @staticmethod
+    def is_provider_allowed(provider: str) -> bool:
+        """检查 provider 是否在白名单中（安全校验，防止 SSRF）"""
+        return provider.lower() in PROVIDER_BASE_URLS
 
     @staticmethod
     def create_provider_instance(provider: str, api_key: str) -> Optional[Any]:
-        """创建厂商适配器实例"""
-        if provider == 'modelscope':
-            from app.providers.modelscope import ModelScopeProvider
-            return ModelScopeProvider(api_key)
-        # 可以添加其他厂商的适配器
-        return None
+        """创建厂商适配器实例（所有厂商均使用 OpenAI 兼容格式）"""
+        base_url = PROVIDER_BASE_URLS.get(provider.lower())
+        if base_url is None:
+            return None  # provider 不在白名单，拒绝
+        from app.providers.modelscope import ModelScopeProvider
+        return ModelScopeProvider(api_key=api_key, base_url=base_url)
 
     @staticmethod
     def normalize_response(provider: str, response: Dict[str, Any]) -> Dict[str, Any]:
