@@ -15,6 +15,7 @@ import {
 import {
   DeleteOutlined,
   ReloadOutlined,
+  CopyOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { adminGetKeys, adminUpdateKeyStatus, adminDeleteKey } from '../../api/admin'
@@ -108,6 +109,34 @@ const AdminKeys: React.FC = () => {
       key: 'provider',
       width: 90,
       render: (provider: string | null) => getProviderLabel(provider),
+    },
+    {
+      title: '密钥值',
+      dataIndex: 'encrypted_key',
+      key: 'encrypted_key',
+      width: 200,
+      render: (key: string) => {
+        if (!key) return '-'
+        const masked = key.length > 12
+          ? `${key.slice(0, 6)}...${key.slice(-4)}`
+          : key
+        return (
+          <Tooltip title={key}>
+            <Space size={4}>
+              <span style={{ fontFamily: 'monospace', fontSize: 12 }}>{masked}</span>
+              <Button
+                type="text"
+                size="small"
+                icon={<CopyOutlined />}
+                onClick={() => {
+                  navigator.clipboard.writeText(key)
+                  message.success('已复制')
+                }}
+              />
+            </Space>
+          </Tooltip>
+        )
+      },
     },
     {
       title: '用户ID',
