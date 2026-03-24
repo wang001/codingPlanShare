@@ -1,11 +1,12 @@
 import time
-import asyncio
 import logging
 from typing import Optional
-import requests as _requests  # 用于 HTTPError 类型检查
+
+import httpx
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
+
 from app.db.database import get_db
 from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
 from app.services.auth_service import AuthService
@@ -14,25 +15,9 @@ from app.services.router_service import RouterService
 from app.services.key_service import KeyService
 from app.models.call_log import CallLog
 
-# 配置日志
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
-
-
-def _handle_vendor_error(db: Session, exc: Exception, key_id: int):
-    """
-    识别厂商异常类型并做相应标记：
-    - 429 / rate limit → mark_key_rate_limited（冷却 1h，可自动恢复）
-    - 401 / 403        → mark_key_invalid（需人工更换）
-    """
-    if isinstance(exc, _requests.HTTPError) and exc.response is not None:
-        code = exc.response.status_code
-        if code == 429:
-            KeyService.mark_key_rate_limited(db, key_id)
-        elif code in (401, 403):
-            KeyService.mark_key_invalid(db, key_id)
 
 
 def get_platform_key(
@@ -41,10 +26,7 @@ def get_platform_key(
 ) -> str:
     """
     从 Header 提取平台调用密钥。
-    支持两种方式：
-      - api-key: <key>
-      - Authorization: Bearer <key>
-    不能用 Depends(lambda) 否则 FastAPI 会把参数当成 query param。
+    支持：api-key: <key>  或  Authorization: Bearer <key>
     """
     if api_key:
         return api_key
@@ -56,348 +38,187 @@ def get_platform_key(
     )
 
 
+def _handle_vendor_error(db: Session, exc: Exception, key_id: int):
+    """
+    识别厂商异常并标记密钥状态：
+    - 429 → mark_key_rate_limited（冷却 1h，可自动恢复）
+    - 401/403 → mark_key_invalid（需人工更换）
+    """
+    if isinstance(exc, httpx.HTTPStatusError):
+        code = exc.response.status_code
+        if code == 429:
+            KeyService.mark_key_rate_limited(db, key_id)
+        elif code in (401, 403):
+            KeyService.mark_key_invalid(db, key_id)
+
+
+def _write_call_log(db: Session, user_id: int, key_id: int, model: str,
+                    success: bool, error_msg: str = None):
+    log = CallLog(
+        user_id=user_id,
+        provider_key_id=key_id,
+        model=model,
+        status=1 if success else 0,
+        error_msg=error_msg,
+        ip="127.0.0.1",
+    )
+    db.add(log)
+    db.commit()
+
+
 @router.post(
     "/completions",
     response_model=ChatCompletionResponse,
     summary="聊天完成（Chat Completions）",
     description=(
         "OpenAI Chat Completions 兼容接口，通过平台路由到各厂商 LLM。\n\n"
-        "**认证**：使用 `api-key: <平台密钥>` Header（不是 Authorization）。"
-        "平台密钥在密钥管理页面创建（key_type=1），密钥所属用户须处于正常状态（status=1）。\n\n"
-        "**模型格式**：`provider/真实模型名`，第一段为厂商标识（须在白名单内），其余为传给厂商的真实模型名。\n"
-        "- `modelscope/moonshotai/Kimi-K2.5` → 通过 ModelScope 调用 Kimi-K2.5\n"
-        "- `zhipu/glm-4` → 通过智谱 API 调用 GLM-4\n"
-        "- `mock/test-model` → 本地 Mock，不发起真实请求，适合测试\n\n"
-        "**计费**：每次成功调用扣减 10 积分（当前版本固定，后续支持按 token 计费）。"
-        "积分不足时返回 400。扣费失败自动回滚。\n\n"
-        "**路由策略**：从该 provider 下状态为正常（status=0）的厂商密钥中随机选一个，"
-        "失败时按配置重试（默认最多重试 1 次）。"
+        "**认证**：`api-key: <平台密钥>` 或 `Authorization: Bearer <平台密钥>`。\n\n"
+        "**模型格式**：`provider/真实模型名`，例如 `mock/test-model`、`modelscope/moonshotai/Kimi-K2.5`。\n\n"
+        "**计费**：每次成功调用扣减 10 积分，失败自动回滚。"
     ),
 )
-def chat_completions(request: ChatCompletionRequest, platform_key: str = Depends(get_platform_key), db: Session = Depends(get_db)):
-    """聊天完成接口"""
-    # 验证平台 API 密钥
+async def chat_completions(
+    request: ChatCompletionRequest,
+    platform_key: str = Depends(get_platform_key),
+    db: Session = Depends(get_db),
+):
+    # 验证平台密钥
     key = AuthService.verify_api_key(db, platform_key)
     if not key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的API密钥"
-        )
-    
-    # 预扣积分（这里简化处理，实际应该根据模型和请求内容计算积分）
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的API密钥")
+
     user_id = key.user_id
-    points_to_deduct = 10  # 简化处理，实际应该根据模型和请求内容计算
-    
+    points_to_deduct = 10
+
     if not PointsService.pre_deduct_points(db, user_id, points_to_deduct):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="积分余额不足"
-        )
-    
-    # 路由请求到合适的厂商
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="积分余额不足")
+
     model_dump_result = request.model_dump()
     route_result = RouterService.route_request(db, request.model, model_dump_result)
     if not route_result:
-        # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="没有可用的厂商密钥"
-        )
-    
-    # 调用真实的厂商API
-    provider = route_result['provider']
-    key_id = route_result['key_id']
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="没有可用的厂商密钥")
+
+    provider   = route_result['provider']
+    key_id     = route_result['key_id']
     vendor_key = route_result['key']
-    
+
     logger.info(f"Routing to provider={provider} key_id={key_id} model={request.model}")
 
-    # 创建厂商适配器实例
     provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
-        # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"不支持的厂商: {provider}"
-        )
-    
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"不支持的厂商: {provider}")
+
     try:
-        # 调用厂商API
-        response = provider_instance.chat_completion(
+        response = await provider_instance.chat_completion(
             model=route_result['request']['model'],
             messages=route_result['request']['messages'],
             temperature=route_result['request']['temperature'],
-            max_tokens=route_result['request']['max_tokens']
+            max_tokens=route_result['request']['max_tokens'],
         )
-        # 更新密钥使用情况
         KeyService.update_key_usage(db, key_id)
-        
-        # 确认扣费
-        PointsService.confirm_deduct(
-            db, user_id, points_to_deduct, 1, key_id, request.model, f"Chat Completion with {provider}"
-        )
-        
-        # 记录调用日志
-        call_log = CallLog(
-            user_id=user_id,
-            provider_key_id=key_id,
-            model=request.model,
-            status=1,
-            ip="127.0.0.1"  # 实际应该从请求中获取
-        )
-        db.add(call_log)
-        db.commit()
-        
+        PointsService.confirm_deduct(db, user_id, points_to_deduct, 1, key_id, request.model, f"Chat with {provider}")
+        _write_call_log(db, user_id, key_id, request.model, success=True)
         return ChatCompletionResponse(**response)
-    except Exception as e:
-        # 标记密钥状态（429 超限 / 401-403 无效）
-        _handle_vendor_error(db, e, key_id)
 
-        # 记录错误日志
-        call_log = CallLog(
-            user_id=user_id,
-            provider_key_id=key_id,
-            model=request.model,
-            status=0,
-            error_msg=str(e),
-            ip="127.0.0.1"  # 实际应该从请求中获取
-        )
-        db.add(call_log)
-        db.commit()
-        
-        # 尝试使用其他密钥
+    except Exception as e:
+        _handle_vendor_error(db, e, key_id)
+        _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
+
+        # 重试（最多 1 次）
         from app.config.settings import settings
         max_retry = settings.key_management.get('max_retry', 1)
-        failed_key_id = key_id  # 记录首次失败的 key，重试时排除
-        
+
         for attempt in range(max_retry):
-            logger.warning(f"Retrying with another key, attempt {attempt + 1}")
-            # 路由请求到合适的厂商（排除当前失败的密钥）
+            logger.warning(f"Retrying chat, attempt {attempt + 1}")
             route_result = RouterService.route_request(db, request.model, model_dump_result)
             if not route_result:
                 break
-            
-            # 调用真实的厂商API
-            provider = route_result['provider']
-            key_id = route_result['key_id']
+
+            provider   = route_result['provider']
+            key_id     = route_result['key_id']
             vendor_key = route_result['key']
-            
-            # 创建厂商适配器实例
+
             provider_instance = RouterService.create_provider_instance(provider, vendor_key)
             if not provider_instance:
                 continue
-            
+
             try:
-                # 调用厂商API
-                response = provider_instance.chat_completion(
+                response = await provider_instance.chat_completion(
                     model=route_result['request']['model'],
                     messages=route_result['request']['messages'],
                     temperature=route_result['request']['temperature'],
-                    max_tokens=route_result['request']['max_tokens']
+                    max_tokens=route_result['request']['max_tokens'],
                 )
-                # 更新密钥使用情况
                 KeyService.update_key_usage(db, key_id)
-                
-                # 确认扣费
-                PointsService.confirm_deduct(
-                    db, user_id, points_to_deduct, 1, key_id, request.model, f"Chat Completion with {provider}"
-                )
-                
-                # 记录调用日志
-                call_log = CallLog(
-                    user_id=user_id,
-                    provider_key_id=key_id,
-                    model=request.model,
-                    status=1,
-                    ip="127.0.0.1"  # 实际应该从请求中获取
-                )
-                db.add(call_log)
-                db.commit()
-                
+                PointsService.confirm_deduct(db, user_id, points_to_deduct, 1, key_id, request.model, f"Chat with {provider}")
+                _write_call_log(db, user_id, key_id, request.model, success=True)
                 return ChatCompletionResponse(**response)
+
             except Exception as retry_e:
-                # 标记重试 key 的状态
                 _handle_vendor_error(db, retry_e, key_id)
-                # 记录错误日志
-                call_log = CallLog(
-                    user_id=user_id,
-                    provider_key_id=key_id,
-                    model=request.model,
-                    status=0,
-                    error_msg=str(retry_e),
-                    ip="127.0.0.1"  # 实际应该从请求中获取
-                )
-                db.add(call_log)
-                db.commit()
+                _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(retry_e))
                 continue
-        
-        # 所有重试都失败，回滚积分
+
         PointsService.rollback_points(db, user_id, points_to_deduct)
-        
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"厂商API调用失败: {str(e)}"
+            detail=f"厂商API调用失败: {str(e)}",
         )
 
+
 @router.post("/completions/stream")
-async def chat_completions_stream(request: ChatCompletionRequest, platform_key: str = Depends(get_platform_key), db: Session = Depends(get_db)):
-    """聊天完成接口（流式响应）"""
-    # 验证平台 API 密钥
+async def chat_completions_stream(
+    request: ChatCompletionRequest,
+    platform_key: str = Depends(get_platform_key),
+    db: Session = Depends(get_db),
+):
+    """聊天完成（流式 SSE）"""
     key = AuthService.verify_api_key(db, platform_key)
     if not key:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="无效的API密钥"
-        )
-    
-    # 预扣积分（这里简化处理，实际应该根据模型和请求内容计算积分）
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的API密钥")
+
     user_id = key.user_id
-    points_to_deduct = 10  # 简化处理，实际应该根据模型和请求内容计算
-    
+    points_to_deduct = 10
+
     if not PointsService.pre_deduct_points(db, user_id, points_to_deduct):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="积分余额不足"
-        )
-    
-    # 路由请求到合适的厂商
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="积分余额不足")
+
     route_result = RouterService.route_request(db, request.model, request.model_dump())
     if not route_result:
-        # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="没有可用的厂商密钥"
-        )
-    
-    # 调用真实的厂商API
-    provider = route_result['provider']
-    key_id = route_result['key_id']
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="没有可用的厂商密钥")
+
+    provider   = route_result['provider']
+    key_id     = route_result['key_id']
     vendor_key = route_result['key']
-    
-    # 创建厂商适配器实例
+
     provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
-        # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"不支持的厂商: {provider}"
-        )
-    
-    # 更新密钥使用情况
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"不支持的厂商: {provider}")
+
     KeyService.update_key_usage(db, key_id)
-    
-    # 生成响应ID
-    response_id = f"chatcmpl-{int(time.time())}"
-    
-    # 流式响应生成器
+
     async def generate():
         try:
-            # 调用厂商的流式API
             async for chunk in provider_instance.chat_completion_stream(
                 model=route_result['request']['model'],
                 messages=route_result['request']['messages'],
                 temperature=route_result['request']['temperature'],
-                max_tokens=route_result['request']['max_tokens']
+                max_tokens=route_result['request']['max_tokens'],
             ):
                 yield chunk
-            
-            # 确认扣费
-            PointsService.confirm_deduct(
-                db, user_id, points_to_deduct, 1, key_id, request.model, f"Chat Completion Stream with {provider}"
-            )
-            
-            # 记录调用日志
-            call_log = CallLog(
-                user_id=user_id,
-                provider_key_id=key_id,
-                model=request.model,
-                status=1,
-                ip="127.0.0.1"  # 实际应该从请求中获取
-            )
-            db.add(call_log)
-            db.commit()
+
+            PointsService.confirm_deduct(db, user_id, points_to_deduct, 1, key_id, request.model, f"Stream with {provider}")
+            _write_call_log(db, user_id, key_id, request.model, success=True)
+
         except Exception as e:
-            # 记录错误日志
-            call_log = CallLog(
-                user_id=user_id,
-                provider_key_id=key_id,
-                model=request.model,
-                status=0,
-                error_msg=str(e),
-                ip="127.0.0.1"  # 实际应该从请求中获取
-            )
-            db.add(call_log)
-            db.commit()
-            
-            # 尝试使用其他密钥
-            from app.config.settings import settings
-            max_retry = settings.key_management.get('max_retry', 1)
-            
-            for attempt in range(max_retry):
-                logger.info(f"Retrying streaming with another key, attempt {attempt + 1}")
-                # 路由请求到合适的厂商（排除当前失败的密钥）
-                retry_route_result = RouterService.route_request(db, request.model, request.model_dump())
-                if not retry_route_result:
-                    break
-                
-                # 调用真实的厂商API
-                retry_provider = retry_route_result['provider']
-                retry_key_id = retry_route_result['key_id']
-                retry_api_key = retry_route_result['key']
-                
-                # 创建厂商适配器实例
-                retry_provider_instance = RouterService.create_provider_instance(retry_provider, retry_api_key)
-                if not retry_provider_instance:
-                    continue
-                
-                try:
-                    # 调用厂商的流式API
-                    async for chunk in retry_provider_instance.chat_completion_stream(
-                        model=retry_route_result['request']['model'],
-                        messages=retry_route_result['request']['messages'],
-                        temperature=retry_route_result['request']['temperature'],
-                        max_tokens=retry_route_result['request']['max_tokens']
-                    ):
-                        yield chunk
-                    
-                    # 确认扣费
-                    PointsService.confirm_deduct(
-                        db, user_id, points_to_deduct, 1, retry_key_id, request.model, f"Chat Completion Stream with {retry_provider}"
-                    )
-                    
-                    # 记录调用日志
-                    call_log = CallLog(
-                        user_id=user_id,
-                        provider_key_id=retry_key_id,
-                        model=request.model,
-                        status=1,
-                        ip="127.0.0.1"  # 实际应该从请求中获取
-                    )
-                    db.add(call_log)
-                    db.commit()
-                    return
-                except Exception as retry_e:
-                    # 记录错误日志
-                    call_log = CallLog(
-                        user_id=user_id,
-                        provider_key_id=retry_key_id,
-                        model=request.model,
-                        status=0,
-                        error_msg=str(retry_e),
-                        ip="127.0.0.1"  # 实际应该从请求中获取
-                    )
-                    db.add(call_log)
-                    db.commit()
-                    continue
-            
-            # 所有重试都失败，回滚积分
+            _handle_vendor_error(db, e, key_id)
+            _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
             PointsService.rollback_points(db, user_id, points_to_deduct)
-            
-            # 发送错误信息
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
             yield "data: [DONE]\n\n"
-    
+
     return StreamingResponse(generate(), media_type="text/event-stream")
