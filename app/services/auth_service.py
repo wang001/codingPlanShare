@@ -45,8 +45,18 @@ class AuthService:
 
     @staticmethod
     def verify_api_key(db: Session, api_key: str) -> Optional[ApiKey]:
-        """验证API密钥"""
-        return db.query(ApiKey).filter(ApiKey.encrypted_key == api_key, ApiKey.status == 0).first()
+        """验证API密钥：密钥状态正常 且 所属用户未被禁用"""
+        key = db.query(ApiKey).filter(
+            ApiKey.encrypted_key == api_key,
+            ApiKey.status == 0,
+        ).first()
+        if key is None:
+            return None
+        # 联查用户状态，禁用用户的密钥一并视为无效
+        user = db.query(User).filter(User.id == key.user_id, User.status == 1).first()
+        if user is None:
+            return None
+        return key
 
     @staticmethod
     def authenticate_user(db: Session, email: str, password: str) -> Optional[User]:
