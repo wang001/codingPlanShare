@@ -46,6 +46,30 @@ flowchart TD
 
 #### 3.1.1 路由设计
 
+#### 3.1.0 模型命名约定与 provider 白名单
+
+调用模型时，`model` 字段格式为 `provider/真实模型名`，例如：
+
+- `modelscope/moonshotai/Kimi-K2.5` → 通过 ModelScope 接口调用 `moonshotai/Kimi-K2.5`
+- `zhipu/glm-4` → 通过智谱接口调用 `glm-4`
+
+后端从 `model` 第一段提取 `provider`，从剩余部分提取真实模型名，在 `PROVIDER_BASE_URLS` 白名单中查找对应 `base_url`。
+
+**安全策略（SSRF 防护）**：创建厂商密钥时，`provider` 必须在以下白名单内，否则 400 拒绝：
+
+| provider | base_url |
+|----------|----------|
+| modelscope | https://api-inference.modelscope.cn/v1 |
+| zhipu | https://open.bigmodel.cn/api/paas/v4 |
+| minimax | https://api.minimax.chat/v1 |
+| alibaba | https://dashscope.aliyuncs.com/compatible-mode/v1 |
+| tencent | https://api.hunyuan.cloud.tencent.com/v1 |
+| baidu | https://qianfan.baidubce.com/v2 |
+| deepseek | https://api.deepseek.com/v1 |
+| siliconflow | https://api.siliconflow.cn/v1 |
+
+所有厂商均使用 OpenAI 兼容格式（`ModelScopeProvider`），无需单独适配器。
+
 ##### 3.1.1.1 普通用户接口
 
 | 路径 | 方法 | 功能 | 模块 |
@@ -57,29 +81,28 @@ flowchart TD
 | /api/v1/keys/{key_id} | PUT | 更新密钥状态 | api/keys.py |
 | /api/v1/keys/{key_id} | DELETE | 删除密钥 | api/keys.py |
 | /api/v1/points | GET | 获取积分余额 | api/points.py |
-| /api/v1/point-logs | GET | 获取积分明细 | api/points.py |
+| /api/v1/points/logs | GET | 获取积分明细（query: limit/offset） | api/points.py |
 | /api/v1/chat/completions | POST | 聊天完成接口 | api/chat.py |
 | /api/v1/embeddings | POST | 嵌入接口 | api/embeddings.py |
 
 ##### 3.1.1.2 后端管理接口
 
+> **注意**：管理员接口前缀为 `/api/admin`（非 `/admin`），避免与前端路由冲突。管理员登录在用户认证模块中。
+
 | 路径 | 方法 | 功能 | 模块 |
 |------|------|------|------|
-| /admin/auth/login | POST | 管理员登录 | api/admin.py |
-| /admin/users | GET | 管理用户列表 | api/admin.py |
-| /admin/users | POST | 创建用户 | api/admin.py |
-| /admin/users/{user_id} | PUT | 更新用户状态 | api/admin.py |
-| /admin/users/{user_id} | DELETE | 删除用户 | api/admin.py |
-| /admin/points | POST | 调整用户积分 | api/admin.py |
-| /admin/keys | GET | 查看所有密钥 | api/admin.py |
-| /admin/keys/{key_id} | PUT | 管理密钥状态 | api/admin.py |
-| /admin/keys/{key_id} | DELETE | 删除密钥 | api/admin.py |
-| /admin/models | GET | 管理模型列表 | api/admin.py |
-| /admin/models | POST | 创建模型 | api/admin.py |
-| /admin/models/{model_id} | PUT | 更新模型信息 | api/admin.py |
-| /admin/models/{model_id} | DELETE | 删除模型 | api/admin.py |
-| /admin/logs | GET | 查看调用日志 | api/admin.py |
-| /admin/system | GET | 查看系统状态 | api/admin.py |
+| /api/v1/auth/admin/login | POST | 管理员登录 | api/auth.py |
+| /api/admin/users | GET | 管理用户列表 | api/admin.py |
+| /api/admin/users | POST | 创建用户 | api/admin.py |
+| /api/admin/users/{user_id} | PUT | 更新用户状态（query: status） | api/admin.py |
+| /api/admin/users/{user_id} | DELETE | 禁用用户（status→0） | api/admin.py |
+| /api/admin/points | POST | 调整用户积分 | api/admin.py |
+| /api/admin/keys | GET | 查看所有密钥 | api/admin.py |
+| /api/admin/keys/{key_id} | PUT | 管理密钥状态（query: status） | api/admin.py |
+| /api/admin/keys/{key_id} | DELETE | 删除密钥（status→1） | api/admin.py |
+| /api/admin/logs | GET | 查看调用日志（query: limit/offset） | api/admin.py |
+
+> **未实现**：`/admin/models`（模型管理）、`/admin/system`（系统状态）在当前版本中尚未实现。
 
 #### 3.1.2 请求处理流程
 
@@ -506,11 +529,7 @@ codingPlanShare/
 │   ├── providers/
 │   │   ├── __init__.py
 │   │   ├── base.py
-│   │   ├── minimax.py
-│   │   ├── zhipu.py
-│   │   ├── alibaba.py
-│   │   ├── tencent.py
-│   │   └── baidu.py
+│   │   └── modelscope.py          # 统一 OpenAI 兼容适配器，覆盖所有白名单厂商
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── user.py
@@ -529,8 +548,8 @@ codingPlanShare/
 │   ├── utils/
 │   │   ├── __init__.py
 │   │   ├── encryption.py
-│   │   ├── rate_limit.py
-│   │   └── logger.py
+│   │   ├── cache.py               # 内存缓存实现
+│   │   └── background_tasks.py    # 后台任务（积分异步落库等）
 │   ├── config/
 │   │   ├── __init__.py
 │   │   └── settings.py
