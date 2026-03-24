@@ -19,6 +19,8 @@ PROVIDER_BASE_URLS: Dict[str, str] = {
     "baidu":      "https://qianfan.baidubce.com/v2",
     "deepseek":   "https://api.deepseek.com/v1",
     "siliconflow":"https://api.siliconflow.cn/v1",
+    # mock provider：仅用于开发和测试，不发起真实网络请求
+    "mock":       "http://mock.internal/v1",
 }
 
 class RouterService:
@@ -139,10 +141,19 @@ class RouterService:
 
     @staticmethod
     def create_provider_instance(provider: str, api_key: str) -> Optional[Any]:
-        """创建厂商适配器实例（所有厂商均使用 OpenAI 兼容格式）"""
-        base_url = PROVIDER_BASE_URLS.get(provider.lower())
+        """创建厂商适配器实例。
+        - mock：使用 MockProvider，不发起真实网络请求
+        - 其他：使用 ModelScopeProvider（统一 OpenAI 兼容格式）
+        """
+        provider = provider.lower()
+        base_url = PROVIDER_BASE_URLS.get(provider)
         if base_url is None:
             return None  # provider 不在白名单，拒绝
+
+        if provider == "mock":
+            from app.providers.mock import MockProvider
+            return MockProvider(api_key=api_key)
+
         from app.providers.modelscope import ModelScopeProvider
         return ModelScopeProvider(api_key=api_key, base_url=base_url)
 
