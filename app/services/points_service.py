@@ -79,8 +79,11 @@ def _get_user_lock(user_id: int) -> threading.RLock:
 
 
 def _load_user_balance_from_db(user_id: int) -> int:
-    """从数据库加载单个用户余额（仅在缓存缺失时调用）。"""
-    db = SessionLocal()
+    """从数据库加载单个用户余额（仅在缓存缺失时调用）。
+    注意：动态引用 app.db.database.SessionLocal，确保测试 monkey-patch 生效。
+    """
+    import app.db.database as _db_module
+    db = _db_module.SessionLocal()
     try:
         user = db.query(User).filter(User.id == user_id).first()
         return user.balance if user else 0
@@ -256,7 +259,8 @@ def flush_to_db():
     for entry in batch:
         latest_balance[entry.user_id] = entry.balance_after
 
-    db = SessionLocal()
+    import app.db.database as _db_module
+    db = _db_module.SessionLocal()
     try:
         # Step 3：更新余额（覆盖写，以内存为准）
         for user_id, balance in latest_balance.items():

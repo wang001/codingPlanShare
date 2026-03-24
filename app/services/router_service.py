@@ -40,46 +40,22 @@ class RouterService:
 
     @staticmethod
     def select_provider_key(db: Session, provider: str, exclude_key_id: Optional[int] = None) -> Optional[ApiKey]:
-        """选择可用的厂商密钥"""
-        # 尝试从缓存获取密钥ID列表
-        cache_key = f"available_keys:{provider}"
-        cached_key_ids = cache.get(cache_key)
-        
-        if cached_key_ids:
-            # 从缓存中过滤掉要排除的密钥
-            if exclude_key_id:
-                cached_key_ids = [key_id for key_id in cached_key_ids if key_id != exclude_key_id]
-            if cached_key_ids:
-                # 从数据库获取完整对象
-                key = db.query(ApiKey).filter(ApiKey.id == cached_key_ids[0]).first()
-                if key and key.status == 0:
-                    return key
-        
-        # 从数据库获取
-        query = db.query(ApiKey).filter(
-            ApiKey.key_type == 2,
-            ApiKey.provider == provider,
-            ApiKey.status == 0
-        )
-        
+        """
+        选择可用的厂商密钥。
+        - 通过 KeyService.get_available_provider_keys 获取（含懒恢复逻辑）
+        - 排除指定的 key（用于重试时跳过刚失败的 key）
+        - 从可用列表中随机选一个（相比固定选最大 ID，避免单 key 热点）
+        """
+        import random
+        available_keys = KeyService.get_available_provider_keys(db, provider)
+
         if exclude_key_id:
-            query = query.filter(ApiKey.id != exclude_key_id)
-        
-        available_keys = query.all()
-        
+            available_keys = [k for k in available_keys if k.id != exclude_key_id]
+
         if not available_keys:
             return None
-        
-        # 选择最新创建的密钥（ID最大的）
-        available_keys.sort(key=lambda x: x.id, reverse=True)
-        selected_key = available_keys[0]
-        
-        # 缓存密钥ID列表
-        if settings.cache.get('enabled', True):
-            key_ids = [key.id for key in available_keys]
-            cache.set(cache_key, key_ids, expire_seconds=300)  # 缓存5分钟
-        
-        return selected_key
+
+        return random.choice(available_keys)
 
     @staticmethod
     def route_request(db: Session, model: str, request_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:

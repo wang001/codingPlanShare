@@ -1,6 +1,8 @@
 import time
 import asyncio
 import logging
+from typing import Optional
+import requests as _requests  # 用于 HTTPError 类型检查
 from fastapi import APIRouter, Depends, HTTPException, status, Header
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
@@ -17,6 +19,42 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+
+def _handle_vendor_error(db: Session, exc: Exception, key_id: int):
+    """
+    识别厂商异常类型并做相应标记：
+    - 429 / rate limit → mark_key_rate_limited（冷却 1h，可自动恢复）
+    - 401 / 403        → mark_key_invalid（需人工更换）
+    """
+    if isinstance(exc, _requests.HTTPError) and exc.response is not None:
+        code = exc.response.status_code
+        if code == 429:
+            KeyService.mark_key_rate_limited(db, key_id)
+        elif code in (401, 403):
+            KeyService.mark_key_invalid(db, key_id)
+
+
+def get_platform_key(
+    api_key: Optional[str] = Header(None, alias="api-key"),
+    authorization: Optional[str] = Header(None),
+) -> str:
+    """
+    从 Header 提取平台调用密钥。
+    支持两种方式：
+      - api-key: <key>
+      - Authorization: Bearer <key>
+    不能用 Depends(lambda) 否则 FastAPI 会把参数当成 query param。
+    """
+    if api_key:
+        return api_key
+    if authorization and authorization.startswith("Bearer "):
+        return authorization[7:]
+    raise HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="缺少认证 Header（api-key 或 Authorization: Bearer <key>）",
+    )
+
 
 @router.post(
     "/completions",
@@ -36,10 +74,10 @@ router = APIRouter()
         "失败时按配置重试（默认最多重试 1 次）。"
     ),
 )
-def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., description="平台调用密钥（key_type=1 的 encrypted_key 值）"), db: Session = Depends(get_db)):
+def chat_completions(request: ChatCompletionRequest, platform_key: str = Depends(get_platform_key), db: Session = Depends(get_db)):
     """聊天完成接口"""
-    # 验证API密钥
-    key = AuthService.verify_api_key(db, api_key)
+    # 验证平台 API 密钥
+    key = AuthService.verify_api_key(db, platform_key)
     if not key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -70,12 +108,12 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
     # 调用真实的厂商API
     provider = route_result['provider']
     key_id = route_result['key_id']
-    api_key = route_result['key']
+    vendor_key = route_result['key']
     
     logger.info(f"Routing to provider={provider} key_id={key_id} model={request.model}")
 
     # 创建厂商适配器实例
-    provider_instance = RouterService.create_provider_instance(provider, api_key)
+    provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
         # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
@@ -113,6 +151,9 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
         
         return ChatCompletionResponse(**response)
     except Exception as e:
+        # 标记密钥状态（429 超限 / 401-403 无效）
+        _handle_vendor_error(db, e, key_id)
+
         # 记录错误日志
         call_log = CallLog(
             user_id=user_id,
@@ -128,6 +169,7 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
         # 尝试使用其他密钥
         from app.config.settings import settings
         max_retry = settings.key_management.get('max_retry', 1)
+        failed_key_id = key_id  # 记录首次失败的 key，重试时排除
         
         for attempt in range(max_retry):
             logger.warning(f"Retrying with another key, attempt {attempt + 1}")
@@ -139,10 +181,10 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
             # 调用真实的厂商API
             provider = route_result['provider']
             key_id = route_result['key_id']
-            api_key = route_result['key']
+            vendor_key = route_result['key']
             
             # 创建厂商适配器实例
-            provider_instance = RouterService.create_provider_instance(provider, api_key)
+            provider_instance = RouterService.create_provider_instance(provider, vendor_key)
             if not provider_instance:
                 continue
             
@@ -175,6 +217,8 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
                 
                 return ChatCompletionResponse(**response)
             except Exception as retry_e:
+                # 标记重试 key 的状态
+                _handle_vendor_error(db, retry_e, key_id)
                 # 记录错误日志
                 call_log = CallLog(
                     user_id=user_id,
@@ -197,10 +241,10 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., 
         )
 
 @router.post("/completions/stream")
-async def chat_completions_stream(request: ChatCompletionRequest, api_key: str = Header(...), db: Session = Depends(get_db)):
+async def chat_completions_stream(request: ChatCompletionRequest, platform_key: str = Depends(get_platform_key), db: Session = Depends(get_db)):
     """聊天完成接口（流式响应）"""
-    # 验证API密钥
-    key = AuthService.verify_api_key(db, api_key)
+    # 验证平台 API 密钥
+    key = AuthService.verify_api_key(db, platform_key)
     if not key:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -230,10 +274,10 @@ async def chat_completions_stream(request: ChatCompletionRequest, api_key: str =
     # 调用真实的厂商API
     provider = route_result['provider']
     key_id = route_result['key_id']
-    api_key = route_result['key']
+    vendor_key = route_result['key']
     
     # 创建厂商适配器实例
-    provider_instance = RouterService.create_provider_instance(provider, api_key)
+    provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
         # 回滚积分
         PointsService.rollback_points(db, user_id, points_to_deduct)
