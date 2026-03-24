@@ -59,11 +59,11 @@ export interface CreateKeyPayload {
 export interface AdminLog {
   id: number
   user_id: number
-  amount: number
-  type: number
-  related_key_id: number | null
   model: string | null
-  remark: string | null
+  status: number         // 0=失败, 1=成功
+  provider_key_id: number | null
+  error_msg: string | null
+  ip: string | null
   created_at: string
 }
 
