@@ -6,7 +6,7 @@
 |------|------|------|----------|
 | 后端语言 | Python | 3.7+ | 简单易用，生态丰富，适合快速开发API服务 |
 | Web框架 | FastAPI | 0.104.1 | 高性能，自动生成API文档，支持异步处理 |
-| 数据库 | SQLite | 3.0+ | 轻量级，无需额外服务，适合Demo期使用 |
+| 数据库 | SQLite / MySQL | 3.0+ / 8.0+ | 双驱动支持：SQLite 适合本地开发，MySQL 用于生产部署 |
 | 缓存 | 内存缓存 | - | 轻量级，无需额外服务，适合Demo期使用 |
 | 认证 | JWT | - | 无状态认证，便于水平扩展 |
 | 加密 | cryptography | 41.0.7 | 提供简单的加密功能，用于密钥加密 |
@@ -22,7 +22,7 @@ flowchart TD
     B --> C[业务逻辑层]
     C --> D[数据访问层]
     C --> E[外部LLM厂商]
-    D --> F[SQLite数据库]
+    D --> F[SQLite / MySQL]
     C --> G[内存缓存]
     H[管理后台] --> C
 ```
@@ -255,61 +255,133 @@ sequenceDiagram
 
 ### 5.1 环境要求
 
-- Python 3.7+
-- SQLite 3.0+
+- Python 3.11+
+- SQLite 3.0+（本地开发）或 MySQL 8.0+（生产部署）
+- PyMySQL（使用 MySQL 时需要）
 
 ### 5.2 安装步骤
 
 1. 克隆代码仓库
-2. 创建虚拟环境：`python -m venv venv`
-3. 激活虚拟环境：`venv\Scripts\activate` (Windows) 或 `source venv/bin/activate` (Linux/Mac)
-4. 安装依赖：`pip install -r requirements.txt`
-5. 初始化数据库：`python init_db.py`
-6. 启动服务：`uvicorn app.main:app --host 0.0.0.0 --port 3000`
+2. 安装依赖：`pip install -r requirements.txt`
+3. 配置环境变量（见 5.4 节）
+4. 初始化数据库：`python init_db.py`
+5. 启动服务：`uvicorn app.main:app --host 0.0.0.0 --port 3000`
 
-### 5.3 配置文件
+### 5.3 配置文件（config.yaml）
+
+`config.yaml` 只存放**非敏感配置**，可以提交到 Git。密码、密钥等敏感信息通过环境变量注入（格式：`${ENV_VAR_NAME}`），启动时自动展开。
+
+#### SQLite 模式（本地开发）
 
 ```yaml
-# config.yaml
-# 管理员配置
-admin:
-  password: "admin123" # 管理员密码，首次登录后可修改
-
-# 数据库配置
 database:
   driver: "sqlite"
-  path: "./data/app.db" # SQLite数据库文件路径
+  path: "./data/app.db"
+```
+
+#### MySQL 模式（生产推荐）
+
+```yaml
+database:
+  driver: "mysql"
+  host: "your-mysql-host"
+  port: 3306
+  user: "${DB_USER}"        # 从环境变量读取
+  password: "${DB_PASSWORD}" # 从环境变量读取
+  name: "your_database_name"
+  pool_size: 20             # 连接池大小（生产建议 10~20）
+  max_overflow: 40          # 超出 pool_size 时最多额外创建的连接数
+  pool_recycle: 1800        # 连接空闲超过此秒数后自动重建（防 MySQL 8h 断连）
+```
+
+#### 完整 config.yaml 示例
+
+```yaml
+# 管理员配置
+admin:
+  password: "admin123"
+
+# 数据库配置（见上方 SQLite / MySQL 两种模式）
+database:
+  driver: "mysql"
+  host: "your-mysql-host"
+  port: 3306
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  name: "coding_plan_share"
+  pool_size: 20
+  max_overflow: 40
+  pool_recycle: 1800
 
 # 限流配置
 rate_limit:
-  user_rpm: 60 # 单个用户每分钟最大请求数
-  default_provider_rpm: 30 # 厂商密钥默认每分钟最大请求数
+  user_rpm: 60
+  default_provider_rpm: 30
 
-# 加密配置
+# 加密配置（值从环境变量读取）
 security:
-  encryption_key: "your-encryption-key" # 用于加密用户厂商密钥的密钥
-  jwt_secret: "your-jwt-secret" # 用于登录令牌的密钥
+  encryption_key: "${ENCRYPTION_KEY}"
+  jwt_secret: "${JWT_SECRET}"
 
 # 超时配置
 timeout:
-  request_timeout: 5 # 请求超时时间，单位：秒
+  request_timeout: 5
 
 # 密钥管理配置
 key_management:
-  max_retry: 1 # 密钥失败后最大重试次数
-  cool_down_period: 7200 # 密钥超限时的冷却时间，单位：秒
-  max_concurrency: 1 # 每个密钥的最大并发数
-
-# 缓存配置
-cache:
-  enabled: true
-  type: "memory"  # 内存缓存
+  max_retry: 1
+  cool_down_period: 7200
 
 # 日志配置
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ```
+
+### 5.4 环境变量配置
+
+敏感信息**不写入 config.yaml**，通过环境变量或 `.env` 文件注入。`.env` 已加入 `.gitignore`，不会提交到代码仓库。
+
+#### 方式一：`.env` 文件（本地开发推荐）
+
+```bash
+# 复制模板
+cp .env.example .env
+# 编辑填入真实值
+```
+
+`.env` 文件内容：
+
+```bash
+# 数据库
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+
+# 安全
+ENCRYPTION_KEY=your-32-char-fernet-key   # 加密厂商密钥用
+JWT_SECRET=your-jwt-secret-key           # 登录 token 签名用
+```
+
+#### 方式二：系统环境变量（生产/容器部署推荐）
+
+```bash
+# Linux / Docker ENV / K8s Secret
+export DB_USER=your_db_user
+export DB_PASSWORD=your_db_password
+export ENCRYPTION_KEY=your-encryption-key
+export JWT_SECRET=your-jwt-secret
+```
+
+> **优先级**：系统环境变量 > `.env` 文件 > config.yaml 占位符默认值
+
+#### 环境变量一览
+
+| 变量名 | 说明 | 是否必填 |
+|--------|------|----------|
+| `DB_USER` | 数据库用户名（MySQL 模式必填） | MySQL 必填 |
+| `DB_PASSWORD` | 数据库密码（MySQL 模式必填） | MySQL 必填 |
+| `ENCRYPTION_KEY` | 厂商密钥加密主密钥（Fernet） | 必填 |
+| `JWT_SECRET` | JWT 签名密钥 | 必填 |
 
 ## 6. API 接口文档
 
