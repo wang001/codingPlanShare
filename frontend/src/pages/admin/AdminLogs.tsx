@@ -12,17 +12,19 @@ import { ReloadOutlined } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
 import { adminGetLogs } from '../../api/admin'
 import type { AdminLog } from '../../types'
-import { formatTimestamp, getPointsTypeLabel } from '../../utils'
+import { formatTimestamp } from '../../utils'
 
 const { Title } = Typography
 
 const PAGE_SIZE = 50
 
-const typeColorMap: Record<number, string> = {
-  1: 'red',
-  2: 'green',
-  3: 'blue',
-  4: 'purple',
+const statusColorMap: Record<number, string> = {
+  0: 'red',
+  1: 'green',
+}
+const statusLabelMap: Record<number, string> = {
+  0: '失败',
+  1: '成功',
 }
 
 const AdminLogs: React.FC = () => {
@@ -68,23 +70,12 @@ const AdminLogs: React.FC = () => {
       width: 80,
     },
     {
-      title: '类型',
-      dataIndex: 'type',
-      key: 'type',
-      width: 110,
-      render: (type: number) => (
-        <Tag color={typeColorMap[type] || 'default'}>{getPointsTypeLabel(type)}</Tag>
-      ),
-    },
-    {
-      title: '积分变动',
-      dataIndex: 'amount',
-      key: 'amount',
-      width: 100,
-      render: (amount: number) => (
-        <span style={{ color: amount > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
-          {amount > 0 ? '+' : ''}{amount}
-        </span>
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 80,
+      render: (status: number) => (
+        <Tag color={statusColorMap[status] ?? 'default'}>{statusLabelMap[status] ?? '未知'}</Tag>
       ),
     },
     {
@@ -94,17 +85,26 @@ const AdminLogs: React.FC = () => {
       render: (model: string | null) => model || '-',
     },
     {
-      title: '关联密钥ID',
-      dataIndex: 'related_key_id',
-      key: 'related_key_id',
+      title: '厂商密钥ID',
+      dataIndex: 'provider_key_id',
+      key: 'provider_key_id',
       width: 110,
       render: (id: number | null) => id ?? '-',
     },
     {
-      title: '备注',
-      dataIndex: 'remark',
-      key: 'remark',
-      render: (remark: string | null) => remark || '-',
+      title: '错误信息',
+      dataIndex: 'error_msg',
+      key: 'error_msg',
+      render: (msg: string | null) => msg
+        ? <span style={{ color: '#ff4d4f', fontSize: 12 }}>{msg.slice(0, 50)}{msg.length > 50 ? '…' : ''}</span>
+        : '-',
+    },
+    {
+      title: 'IP',
+      dataIndex: 'ip',
+      key: 'ip',
+      width: 120,
+      render: (ip: string | null) => ip || '-',
     },
     {
       title: '时间',
