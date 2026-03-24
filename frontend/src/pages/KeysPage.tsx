@@ -1,186 +1,424 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
+import {
+  Table,
+  Tag,
+  Button,
+  Modal,
+  Form,
+  Input,
+  Select,
+  Space,
+  Popconfirm,
+  Spin,
+  message,
+  Tabs,
+  Tooltip,
+} from 'antd'
+import {
+  PlusOutlined,
+  DeleteOutlined,
+  StopOutlined,
+  CheckCircleOutlined,
+  CopyOutlined,
+  ReloadOutlined,
+} from '@ant-design/icons'
+import type { ColumnsType } from 'antd/es/table'
+import { getKeys, createKey, updateKey, deleteKey } from '../api/keys'
+import type { Key, KeyProvider } from '../types'
+import {
+  formatTimestamp,
+  getKeyStatusLabel,
+  getKeyStatusColor,
+  getProviderLabel,
+} from '../utils'
 
-interface KeysPageProps {
-  user: any
-}
+const providerOptions: { label: string; value: KeyProvider }[] = [
+  { label: '智谱', value: 'zhipu' },
+  { label: 'MiniMax', value: 'minimax' },
+  { label: '阿里云', value: 'alibaba' },
+  { label: '腾讯云', value: 'tencent' },
+  { label: '百度', value: 'baidu' },
+]
 
-const KeysPage: React.FC<KeysPageProps> = () => {
-  const [platformKeys, setPlatformKeys] = useState<any[]>([])
-  const [vendorKeys, setVendorKeys] = useState<any[]>([])
-  const [showAddKey, setShowAddKey] = useState(false)
-  const [newKey, setNewKey] = useState({
-    name: '',
-    provider: '',
-    key: ''
-  })
+const KeysPage: React.FC = () => {
+  const [keys, setKeys] = useState<Key[]>([])
+  const [loading, setLoading] = useState(true)
+  const [actionLoading, setActionLoading] = useState<number | null>(null)
 
-  useEffect(() => {
-    // 模拟获取密钥列表
-    const mockPlatformKeys = [
-      { id: 1, key: 'sk-xxxxxxxxxxxxxxxxxxxxxxxx', status: '正常', created_at: '2026-03-20 10:00:00' },
-      { id: 2, key: 'sk-yyyyyyyyyyyyyyyyyyyyyyyy', status: '禁用', created_at: '2026-03-19 15:30:00' },
-    ]
-    const mockVendorKeys = [
-      { id: 1, name: 'ZhipuAI', provider: 'zhipu', status: '正常', created_at: '2026-03-18 09:15:00' },
-      { id: 2, name: 'OpenAI', provider: 'openai', status: '正常', created_at: '2026-03-17 14:00:00' },
-    ]
-    setPlatformKeys(mockPlatformKeys)
-    setVendorKeys(mockVendorKeys)
-  }, [])
+  // 创建密钥弹窗
+  const [createModalOpen, setCreateModalOpen] = useState(false)
+  const [createType, setCreateType] = useState<1 | 2>(1)
+  const [createLoading, setCreateLoading] = useState(false)
+  const [form] = Form.useForm()
 
-  const handleAddKey = () => {
-    // 模拟添加密钥
-    const newVendorKey = {
-      id: vendorKeys.length + 1,
-      name: newKey.name,
-      provider: newKey.provider,
-      status: '正常',
-      created_at: new Date().toLocaleString()
+  const fetchKeys = async () => {
+    setLoading(true)
+    try {
+      const data = await getKeys()
+      setKeys(data)
+    } catch {
+      message.error('获取密钥列表失败')
+    } finally {
+      setLoading(false)
     }
-    setVendorKeys([...vendorKeys, newVendorKey])
-    setNewKey({ name: '', provider: '', key: '' })
-    setShowAddKey(false)
+  }
+
+  useEffect(() => { fetchKeys() }, [])
+
+  // 平台密钥和厂商密钥分开
+  const platformKeys = keys.filter(k => k.key_type === 1 && k.status !== 1)
+  const vendorKeys = keys.filter(k => k.key_type === 2 && k.status !== 1)
+
+  const handleCreateKey = async (values: any) => {
+    setCreateLoading(true)
+    try {
+      await createKey({
+        name: values.name,
+        key_type: createType,
+        provider: createType === 2 ? values.provider : undefined,
+        encrypted_key: createType === 2 ? values.encrypted_key : undefined,
+      })
+      message.success('创建密钥成功')
+      setCreateModalOpen(false)
+      form.resetFields()
+      fetchKeys()
+    } catch {
+      message.error('创建密钥失败')
+    } finally {
+      setCreateLoading(false)
+    }
+  }
+
+  const handleToggleStatus = async (key: Key) => {
+    const newStatus = key.status === 0 ? 2 : 0
+    setActionLoading(key.id)
+    try {
+      await updateKey(key.id, { status: newStatus })
+      message.success(newStatus === 0 ? '已启用' : '已禁用')
+      fetchKeys()
+    } catch {
+      message.error('操作失败')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const handleDelete = async (id: number) => {
+    setActionLoading(id)
+    try {
+      await deleteKey(id)
+      message.success('删除成功')
+      fetchKeys()
+    } catch {
+      message.error('删除失败')
+    } finally {
+      setActionLoading(null)
+    }
+  }
+
+  const copyToClipboard = (text: string) => {
+    navigator.clipboard.writeText(text).then(() => {
+      message.success('已复制到剪贴板')
+    }).catch(() => {
+      message.error('复制失败')
+    })
+  }
+
+  const platformColumns: ColumnsType<Key> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+    },
+    {
+      title: '密钥（隐藏）',
+      dataIndex: 'encrypted_key',
+      key: 'encrypted_key',
+      render: (key: string | undefined, record: Key) => {
+        const displayKey = key ? `${key.slice(0, 8)}...${key.slice(-4)}` : `ID: ${record.id}`
+        return (
+          <Space>
+            <span style={{ fontFamily: 'monospace' }}>{displayKey}</span>
+            {key && (
+              <Tooltip title="复制完整密钥">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<CopyOutlined />}
+                  onClick={() => copyToClipboard(key)}
+                />
+              </Tooltip>
+            )}
+          </Space>
+        )
+      },
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status: number) => (
+        <Tag color={getKeyStatusColor(status)}>{getKeyStatusLabel(status)}</Tag>
+      ),
+    },
+    {
+      title: '使用次数',
+      dataIndex: 'used_count',
+      key: 'used_count',
+      width: 90,
+    },
+    {
+      title: '最后使用',
+      dataIndex: 'last_used_at',
+      key: 'last_used_at',
+      width: 180,
+      render: (ts: string | null) => formatTimestamp(ts),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (ts: string) => formatTimestamp(ts),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_: unknown, record: Key) => (
+        <Space>
+          <Tooltip title={record.status === 0 ? '禁用' : '启用'}>
+            <Button
+              size="small"
+              type="text"
+              icon={record.status === 0 ? <StopOutlined /> : <CheckCircleOutlined />}
+              loading={actionLoading === record.id}
+              onClick={() => handleToggleStatus(record)}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="确认删除此密钥？"
+            okText="确认"
+            cancelText="取消"
+            onConfirm={() => handleDelete(record.id)}
+          >
+            <Tooltip title="删除">
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                loading={actionLoading === record.id}
+              />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  const vendorColumns: ColumnsType<Key> = [
+    {
+      title: '名称',
+      dataIndex: 'name',
+      key: 'name',
+    },
+    {
+      title: '厂商',
+      dataIndex: 'provider',
+      key: 'provider',
+      width: 100,
+      render: (provider: string | null) => getProviderLabel(provider),
+    },
+    {
+      title: '状态',
+      dataIndex: 'status',
+      key: 'status',
+      width: 90,
+      render: (status: number) => (
+        <Tag color={getKeyStatusColor(status)}>{getKeyStatusLabel(status)}</Tag>
+      ),
+    },
+    {
+      title: '使用次数',
+      dataIndex: 'used_count',
+      key: 'used_count',
+      width: 90,
+    },
+    {
+      title: '最后使用',
+      dataIndex: 'last_used_at',
+      key: 'last_used_at',
+      width: 180,
+      render: (ts: string | null) => formatTimestamp(ts),
+    },
+    {
+      title: '创建时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (ts: string) => formatTimestamp(ts),
+    },
+    {
+      title: '操作',
+      key: 'action',
+      width: 120,
+      render: (_: unknown, record: Key) => (
+        <Space>
+          <Tooltip title={record.status === 0 ? '禁用' : '启用'}>
+            <Button
+              size="small"
+              type="text"
+              icon={record.status === 0 ? <StopOutlined /> : <CheckCircleOutlined />}
+              loading={actionLoading === record.id}
+              onClick={() => handleToggleStatus(record)}
+            />
+          </Tooltip>
+          <Popconfirm
+            title="确认删除此密钥？"
+            okText="确认"
+            cancelText="取消"
+            onConfirm={() => handleDelete(record.id)}
+          >
+            <Tooltip title="删除">
+              <Button
+                size="small"
+                type="text"
+                danger
+                icon={<DeleteOutlined />}
+                loading={actionLoading === record.id}
+              />
+            </Tooltip>
+          </Popconfirm>
+        </Space>
+      ),
+    },
+  ]
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+        <Spin size="large" />
+      </div>
+    )
   }
 
   return (
-    <div className="container">
-      <div className="card mb-20">
-        <h2>密钥管理</h2>
-      </div>
-
-      <div className="card mb-20">
-        <div className="row">
-          <div className="col">
-            <h3>平台密钥</h3>
-          </div>
-          <div className="col" style={{ textAlign: 'right' }}>
-            <button className="btn btn-primary">生成新密钥</button>
-          </div>
-        </div>
-        <div style={{ overflowX: 'auto', marginTop: '20px' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e8e8e8' }}>
-                <th style={{ padding: '12px', textAlign: 'left' }}>密钥</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>状态</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>创建时间</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {platformKeys.map((key) => (
-                <tr key={key.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '12px' }}>{key.key}</td>
-                  <td style={{ padding: '12px', color: key.status === '正常' ? 'green' : 'red' }}>
-                    {key.status}
-                  </td>
-                  <td style={{ padding: '12px' }}>{key.created_at}</td>
-                  <td style={{ padding: '12px' }}>
-                    <button className="btn btn-secondary" style={{ marginRight: '10px' }}>
-                      {key.status === '正常' ? '禁用' : '启用'}
-                    </button>
-                    <button className="btn btn-secondary">删除</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="card">
-        <div className="row">
-          <div className="col">
-            <h3>厂商密钥</h3>
-          </div>
-          <div className="col" style={{ textAlign: 'right' }}>
-            <button className="btn btn-primary" onClick={() => setShowAddKey(true)}>
-              添加密钥
-            </button>
-          </div>
-        </div>
-        
-        {showAddKey && (
-          <div className="card" style={{ marginTop: '20px' }}>
-            <h4>添加厂商密钥</h4>
-            <div className="row">
-              <div className="col">
-                <label>密钥名称</label>
-                <input
-                  type="text"
-                  value={newKey.name}
-                  onChange={(e) => setNewKey({ ...newKey, name: e.target.value })}
-                  placeholder="请输入密钥名称"
-                />
-              </div>
-              <div className="col">
-                <label>厂商</label>
-                <select
-                  value={newKey.provider}
-                  onChange={(e) => setNewKey({ ...newKey, provider: e.target.value })}
-                >
-                  <option value="">请选择厂商</option>
-                  <option value="zhipu">ZhipuAI</option>
-                  <option value="openai">OpenAI</option>
-                  <option value="minimax">Minimax</option>
-                  <option value="alibaba">Alibaba</option>
-                  <option value="tencent">Tencent</option>
-                  <option value="baidu">Baidu</option>
-                </select>
-              </div>
-            </div>
-            <div>
-              <label>API密钥</label>
-              <input
-                type="text"
-                value={newKey.key}
-                onChange={(e) => setNewKey({ ...newKey, key: e.target.value })}
-                placeholder="请输入API密钥"
+    <div style={{ maxWidth: 1000, margin: '0 auto' }}>
+      <Tabs
+        defaultActiveKey="platform"
+        tabBarExtraContent={
+          <Space>
+            <Button icon={<ReloadOutlined />} onClick={fetchKeys}>刷新</Button>
+            <Button
+              type="primary"
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setCreateType(1)
+                form.resetFields()
+                setCreateModalOpen(true)
+              }}
+            >
+              新建平台密钥
+            </Button>
+            <Button
+              icon={<PlusOutlined />}
+              onClick={() => {
+                setCreateType(2)
+                form.resetFields()
+                setCreateModalOpen(true)
+              }}
+            >
+              托管厂商密钥
+            </Button>
+          </Space>
+        }
+        items={[
+          {
+            key: 'platform',
+            label: `平台密钥（${platformKeys.length}）`,
+            children: (
+              <Table
+                columns={platformColumns}
+                dataSource={platformKeys}
+                rowKey="id"
+                scroll={{ x: 700 }}
+                size="middle"
+                pagination={{ pageSize: 10 }}
               />
-            </div>
-            <div style={{ marginTop: '10px', textAlign: 'right' }}>
-              <button className="btn btn-secondary" onClick={() => setShowAddKey(false)} style={{ marginRight: '10px' }}>
-                取消
-              </button>
-              <button className="btn btn-primary" onClick={handleAddKey}>
-                保存
-              </button>
-            </div>
-          </div>
-        )}
+            ),
+          },
+          {
+            key: 'vendor',
+            label: `厂商密钥（${vendorKeys.length}）`,
+            children: (
+              <Table
+                columns={vendorColumns}
+                dataSource={vendorKeys}
+                rowKey="id"
+                scroll={{ x: 700 }}
+                size="middle"
+                pagination={{ pageSize: 10 }}
+              />
+            ),
+          },
+        ]}
+      />
 
-        <div style={{ overflowX: 'auto', marginTop: '20px' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e8e8e8' }}>
-                <th style={{ padding: '12px', textAlign: 'left' }}>名称</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>厂商</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>状态</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>创建时间</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>操作</th>
-              </tr>
-            </thead>
-            <tbody>
-              {vendorKeys.map((key) => (
-                <tr key={key.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '12px' }}>{key.name}</td>
-                  <td style={{ padding: '12px' }}>{key.provider}</td>
-                  <td style={{ padding: '12px', color: key.status === '正常' ? 'green' : 'red' }}>
-                    {key.status}
-                  </td>
-                  <td style={{ padding: '12px' }}>{key.created_at}</td>
-                  <td style={{ padding: '12px' }}>
-                    <button className="btn btn-secondary" style={{ marginRight: '10px' }}>
-                      {key.status === '正常' ? '禁用' : '启用'}
-                    </button>
-                    <button className="btn btn-secondary">删除</button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      <Modal
+        title={createType === 1 ? '新建平台密钥' : '托管厂商密钥'}
+        open={createModalOpen}
+        onCancel={() => setCreateModalOpen(false)}
+        footer={null}
+        destroyOnClose
+      >
+        <Form
+          form={form}
+          layout="vertical"
+          onFinish={handleCreateKey}
+          style={{ marginTop: 16 }}
+        >
+          <Form.Item
+            name="name"
+            label="密钥名称"
+            rules={[{ required: true, message: '请输入密钥名称' }]}
+          >
+            <Input placeholder="例如：生产环境密钥" />
+          </Form.Item>
+
+          {createType === 2 && (
+            <>
+              <Form.Item
+                name="provider"
+                label="厂商"
+                rules={[{ required: true, message: '请选择厂商' }]}
+              >
+                <Select
+                  placeholder="请选择厂商"
+                  options={providerOptions}
+                />
+              </Form.Item>
+              <Form.Item
+                name="encrypted_key"
+                label="厂商 API 密钥"
+                rules={[{ required: true, message: '请输入厂商 API 密钥' }]}
+              >
+                <Input.Password placeholder="请输入原始 API 密钥" />
+              </Form.Item>
+            </>
+          )}
+
+          <Form.Item style={{ marginBottom: 0, textAlign: 'right' }}>
+            <Space>
+              <Button onClick={() => setCreateModalOpen(false)}>取消</Button>
+              <Button type="primary" htmlType="submit" loading={createLoading}>
+                创建
+              </Button>
+            </Space>
+          </Form.Item>
+        </Form>
+      </Modal>
     </div>
   )
 }
