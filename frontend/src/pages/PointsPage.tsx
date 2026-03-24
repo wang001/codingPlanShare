@@ -1,60 +1,177 @@
-import React, { useState, useEffect } from 'react'
+import React, { useEffect, useState } from 'react'
+import {
+  Card,
+  Table,
+  Tag,
+  Typography,
+  Statistic,
+  Spin,
+  message,
+  Button,
+} from 'antd'
+import { WalletOutlined, ReloadOutlined } from '@ant-design/icons'
+import type { ColumnsType } from 'antd/es/table'
+import { getBalance, getPointsLogs } from '../api/points'
+import type { PointsLog } from '../types'
+import { formatTimestamp, getPointsTypeLabel } from '../utils'
 
-interface PointsPageProps {
-  user: any
+const { Title } = Typography
+
+const PAGE_SIZE = 20
+
+const typeColorMap: Record<number, string> = {
+  1: 'red',
+  2: 'green',
+  3: 'blue',
+  4: 'purple',
 }
 
-const PointsPage: React.FC<PointsPageProps> = ({ user }) => {
-  const [points] = useState(user.balance)
-  const [pointLogs, setPointLogs] = useState<any[]>([])
+const PointsPage: React.FC = () => {
+  const [balance, setBalance] = useState<number>(0)
+  const [logs, setLogs] = useState<PointsLog[]>([])
+  const [loading, setLoading] = useState(true)
+  const [tableLoading, setTableLoading] = useState(false)
+  const [offset, setOffset] = useState(0)
+  const [hasMore, setHasMore] = useState(true)
+
+  const fetchBalance = async () => {
+    try {
+      const data = await getBalance()
+      setBalance(data.balance)
+    } catch {
+      message.error('获取积分余额失败')
+    }
+  }
+
+  const fetchLogs = async (newOffset = 0, append = false) => {
+    setTableLoading(true)
+    try {
+      const data = await getPointsLogs({ limit: PAGE_SIZE, offset: newOffset })
+      if (append) {
+        setLogs(prev => [...prev, ...data])
+      } else {
+        setLogs(data)
+      }
+      setHasMore(data.length === PAGE_SIZE)
+      setOffset(newOffset)
+    } catch {
+      message.error('获取积分明细失败')
+    } finally {
+      setTableLoading(false)
+    }
+  }
 
   useEffect(() => {
-    // 模拟获取积分明细
-    const mockLogs = [
-      { id: 1, amount: -10, type: '调用消耗', model: 'GLM-5', created_at: '2026-03-20 10:00:00' },
-      { id: 2, amount: 50, type: '托管收益', model: 'GPT-4', created_at: '2026-03-19 15:30:00' },
-      { id: 3, amount: -5, type: '调用消耗', model: 'GLM-5', created_at: '2026-03-18 09:15:00' },
-      { id: 4, amount: 100, type: '管理员调整', model: '', created_at: '2026-03-17 14:00:00' },
-    ]
-    setPointLogs(mockLogs)
+    Promise.all([fetchBalance(), fetchLogs(0)]).finally(() => setLoading(false))
   }, [])
 
-  return (
-    <div className="container">
-      <div className="card mb-20">
-        <h2>积分管理</h2>
-        <div style={{ fontSize: '24px', fontWeight: 'bold', margin: '20px 0' }}>
-          当前余额: {points} 积分
-        </div>
-      </div>
+  const handleRefresh = () => {
+    fetchBalance()
+    fetchLogs(0)
+  }
 
-      <div className="card">
-        <h3>积分明细</h3>
-        <div style={{ overflowX: 'auto', marginTop: '20px' }}>
-          <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-            <thead>
-              <tr style={{ borderBottom: '1px solid #e8e8e8' }}>
-                <th style={{ padding: '12px', textAlign: 'left' }}>类型</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>数量</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>模型</th>
-                <th style={{ padding: '12px', textAlign: 'left' }}>时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {pointLogs.map((log) => (
-                <tr key={log.id} style={{ borderBottom: '1px solid #f0f0f0' }}>
-                  <td style={{ padding: '12px' }}>{log.type}</td>
-                  <td style={{ padding: '12px', color: log.amount > 0 ? 'green' : 'red' }}>
-                    {log.amount > 0 ? '+' : ''}{log.amount}
-                  </td>
-                  <td style={{ padding: '12px' }}>{log.model || '-'}</td>
-                  <td style={{ padding: '12px' }}>{log.created_at}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+  const handleLoadMore = () => {
+    fetchLogs(offset + PAGE_SIZE, true)
+  }
+
+  const columns: ColumnsType<PointsLog> = [
+    {
+      title: '类型',
+      dataIndex: 'type',
+      key: 'type',
+      width: 120,
+      render: (type: number) => (
+        <Tag color={typeColorMap[type] || 'default'}>{getPointsTypeLabel(type)}</Tag>
+      ),
+    },
+    {
+      title: '变动量',
+      dataIndex: 'amount',
+      key: 'amount',
+      width: 100,
+      render: (amount: number) => (
+        <span style={{ color: amount > 0 ? '#52c41a' : '#ff4d4f', fontWeight: 600 }}>
+          {amount > 0 ? '+' : ''}{amount}
+        </span>
+      ),
+    },
+    {
+      title: '模型',
+      dataIndex: 'model',
+      key: 'model',
+      render: (model: string | null) => model || '-',
+    },
+    {
+      title: '备注',
+      dataIndex: 'remark',
+      key: 'remark',
+      render: (remark: string | null) => remark || '-',
+    },
+    {
+      title: '时间',
+      dataIndex: 'created_at',
+      key: 'created_at',
+      width: 180,
+      render: (ts: string) => formatTimestamp(ts),
+    },
+  ]
+
+  if (loading) {
+    return (
+      <div style={{ display: 'flex', justifyContent: 'center', padding: 48 }}>
+        <Spin size="large" />
       </div>
+    )
+  }
+
+  return (
+    <div style={{ maxWidth: 900, margin: '0 auto' }}>
+      <Card style={{ marginBottom: 16, borderRadius: 8 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
+          <Statistic
+            title="当前积分余额"
+            value={balance}
+            prefix={<WalletOutlined />}
+            suffix="分"
+            valueStyle={{ color: '#1677ff', fontSize: 32 }}
+          />
+          <Button icon={<ReloadOutlined />} onClick={handleRefresh}>
+            刷新
+          </Button>
+        </div>
+      </Card>
+
+      <Card
+        title={<Title level={5} style={{ margin: 0 }}>积分明细</Title>}
+        style={{ borderRadius: 8 }}
+      >
+        <Table
+          columns={columns}
+          dataSource={logs}
+          rowKey="id"
+          loading={tableLoading}
+          pagination={false}
+          scroll={{ x: 600 }}
+          size="middle"
+        />
+        {hasMore && (
+          <div style={{ textAlign: 'center', marginTop: 16 }}>
+            <Button onClick={handleLoadMore} loading={tableLoading}>
+              加载更多
+            </Button>
+          </div>
+        )}
+        {!hasMore && logs.length > 0 && (
+          <div style={{ textAlign: 'center', marginTop: 16, color: '#999' }}>
+            已加载全部记录（共 {logs.length} 条）
+          </div>
+        )}
+        {logs.length === 0 && !tableLoading && (
+          <div style={{ textAlign: 'center', marginTop: 16, color: '#999' }}>
+            暂无积分记录
+          </div>
+        )}
+      </Card>
     </div>
   )
 }

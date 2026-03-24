@@ -18,8 +18,25 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-@router.post("/completions", response_model=ChatCompletionResponse)
-def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...), db: Session = Depends(get_db)):
+@router.post(
+    "/completions",
+    response_model=ChatCompletionResponse,
+    summary="聊天完成（Chat Completions）",
+    description=(
+        "OpenAI Chat Completions 兼容接口，通过平台路由到各厂商 LLM。\n\n"
+        "**认证**：使用 `api-key: <平台密钥>` Header（不是 Authorization）。"
+        "平台密钥在密钥管理页面创建（key_type=1），密钥所属用户须处于正常状态（status=1）。\n\n"
+        "**模型格式**：`provider/真实模型名`，第一段为厂商标识（须在白名单内），其余为传给厂商的真实模型名。\n"
+        "- `modelscope/moonshotai/Kimi-K2.5` → 通过 ModelScope 调用 Kimi-K2.5\n"
+        "- `zhipu/glm-4` → 通过智谱 API 调用 GLM-4\n"
+        "- `mock/test-model` → 本地 Mock，不发起真实请求，适合测试\n\n"
+        "**计费**：每次成功调用扣减 10 积分（当前版本固定，后续支持按 token 计费）。"
+        "积分不足时返回 400。扣费失败自动回滚。\n\n"
+        "**路由策略**：从该 provider 下状态为正常（status=0）的厂商密钥中随机选一个，"
+        "失败时按配置重试（默认最多重试 1 次）。"
+    ),
+)
+def chat_completions(request: ChatCompletionRequest, api_key: str = Header(..., description="平台调用密钥（key_type=1 的 encrypted_key 值）"), db: Session = Depends(get_db)):
     """聊天完成接口"""
     # 验证API密钥
     key = AuthService.verify_api_key(db, api_key)
@@ -40,17 +57,7 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
         )
     
     # 路由请求到合适的厂商
-    logger.info(f"Request model: {request.model}")
-    logger.info(f"Request messages: {request.messages}")
-    
-    # 测试model_dump
     model_dump_result = request.model_dump()
-    logger.info(f"Model dump result: {model_dump_result}")
-    logger.info(f"Messages type: {type(model_dump_result['messages'])}")
-    if model_dump_result['messages']:
-        logger.info(f"First message type: {type(model_dump_result['messages'][0])}")
-        logger.info(f"First message: {model_dump_result['messages'][0]}")
-    
     route_result = RouterService.route_request(db, request.model, model_dump_result)
     if not route_result:
         # 回滚积分
@@ -65,14 +72,8 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
     key_id = route_result['key_id']
     api_key = route_result['key']
     
-    logger.info(f"Route result: {route_result}")
-    logger.info(f"Provider: {provider}")
-    logger.info(f"Key ID: {key_id}")
-    logger.info(f"Request data: {route_result['request']}")
-    logger.info(f"Messages in request: {route_result['request']['messages']}")
-    if route_result['request']['messages']:
-        logger.info(f"First message type in request: {type(route_result['request']['messages'][0])}")
-    
+    logger.info(f"Routing to provider={provider} key_id={key_id} model={request.model}")
+
     # 创建厂商适配器实例
     provider_instance = RouterService.create_provider_instance(provider, api_key)
     if not provider_instance:
@@ -85,15 +86,12 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
     
     try:
         # 调用厂商API
-        logger.info("Calling provider chat_completion...")
         response = provider_instance.chat_completion(
             model=route_result['request']['model'],
             messages=route_result['request']['messages'],
             temperature=route_result['request']['temperature'],
             max_tokens=route_result['request']['max_tokens']
         )
-        logger.info(f"Provider response: {response}")
-        
         # 更新密钥使用情况
         KeyService.update_key_usage(db, key_id)
         
@@ -132,7 +130,7 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
         max_retry = settings.key_management.get('max_retry', 1)
         
         for attempt in range(max_retry):
-            logger.info(f"Retrying with another key, attempt {attempt + 1}")
+            logger.warning(f"Retrying with another key, attempt {attempt + 1}")
             # 路由请求到合适的厂商（排除当前失败的密钥）
             route_result = RouterService.route_request(db, request.model, model_dump_result)
             if not route_result:
@@ -150,15 +148,12 @@ def chat_completions(request: ChatCompletionRequest, api_key: str = Header(...),
             
             try:
                 # 调用厂商API
-                logger.info("Calling provider chat_completion with new key...")
                 response = provider_instance.chat_completion(
                     model=route_result['request']['model'],
                     messages=route_result['request']['messages'],
                     temperature=route_result['request']['temperature'],
                     max_tokens=route_result['request']['max_tokens']
                 )
-                logger.info(f"Provider response with new key: {response}")
-                
                 # 更新密钥使用情况
                 KeyService.update_key_usage(db, key_id)
                 
