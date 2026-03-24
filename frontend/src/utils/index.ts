@@ -58,11 +58,11 @@ export function getKeyStatusColor(status: number): string {
   return map[status] || 'default'
 }
 
-// 用户状态中文映射
+// 用户状态中文映射（后端：0=禁用，1=正常）
 export function getUserStatusLabel(status: number): string {
   const map: Record<number, string> = {
-    0: '正常',
-    1: '已禁用',
+    0: '已禁用',
+    1: '正常',
   }
   return map[status] || `状态${status}`
 }
