@@ -148,10 +148,17 @@ sequenceDiagram
 
 #### 3.2.2 积分服务
 
-- 管理用户积分余额
-- 处理积分预扣和确认
-- 实现积分变动记录
-- 提供积分余额查询
+采用**策略模式（Strategy Pattern）**，根据数据库 driver 自动切换后端实现：
+
+| 模式 | driver | 实现方式 |
+|------|--------|---------|
+| SQLiteBackend | sqlite | 内存余额 + per-user 锁 + 异步 flush 落库 |
+| MySQLBackend | mysql | 直接写 DB，利用 MySQL 行锁保证并发安全 |
+
+- **SQLiteBackend**：启动时懒加载用户余额到内存，`pre_deduct` 纯内存原子扣减（持锁 < 1ms），积分变动写入 `PendingLog` 队列，后台任务每秒批量 flush 落库
+- **MySQLBackend**：`pre_deduct` 通过 `UPDATE ... WHERE balance >= amount` 原子扣减，`rowcount=0` 即余额不足，AI 响应本身耗时数秒，DB 写入毫秒级，无需缓存层；`flush_to_db()` 为空操作
+- **计费单价**：当前固定 **10 积分/次**，每次成功调用扣减，失败自动回滚
+- 对外统一暴露 `PointsService`，调用方零感知 driver 切换
 
 #### 3.2.3 密钥管理服务
 
@@ -201,9 +208,10 @@ sequenceDiagram
 | user_id | INTEGER | 所属用户 ID，外键关联 users.id |
 | key_type | INTEGER | 密钥类型：1 - 平台调用密钥，2 - 用户托管的厂商密钥 |
 | provider | TEXT | 厂商类型（仅厂商密钥有效）：minimax, zhipu, alibaba, tencent, baidu 等 |
-| encrypted_key | TEXT | 加密后的密钥内容 |
+| encrypted_key | TEXT | 加密后的密钥内容（平台密钥存明文，厂商密钥加密存储） |
 | name | TEXT | 密钥名称 |
-| status | INTEGER | 状态：0 - 正常，1 - 删除， 2 - 禁用，3 - 超限，4 - 无效 |
+| status | INTEGER | 状态：0 - 正常，1 - 删除，2 - 禁用，3 - 超限冷却，4 - 无效 |
+| cooldown_until | DATETIME | 冷却截止时间（status=3 超限冷却时使用，到期自动恢复） |
 | used_count | INTEGER | 累计调用次数 |
 | last_used_at | INTEGER | 最后使用时间戳 |
 | created_at | INTEGER | 创建时间戳 |
@@ -215,7 +223,7 @@ sequenceDiagram
 | id | INTEGER | 主键，自增 |
 | user_id | INTEGER | 所属用户 ID |
 | amount | INTEGER | 变动数量，正数为增加，负数为扣减 |
-| type | INTEGER | 变动类型：1 - 调用消耗，2 - 托管收益，3 - 管理员调整，4 - 平台收入 |
+| type | INTEGER | 变动类型：1 - 调用消耗，2 - 托管收益，3 - 管理员调整 |
 | related_key_id | INTEGER | 关联的密钥 ID |
 | model | TEXT | 关联的模型 |
 | remark | TEXT | 备注 |
@@ -243,13 +251,14 @@ sequenceDiagram
 
 ### 4.2 缓存设计
 
+系统使用进程内 `MemoryCache`（分段锁实现），当前仅用于密钥路由层：
+
 | 缓存键 | 类型 | 过期时间 | 用途 |
 |--------|------|----------|------|
-| user:balance:{user_id} | Integer | 1小时 | 缓存用户积分余额 |
-| api_key:{key} | String | 1小时 | 缓存API密钥信息 |
-| rate_limit:user:{user_id} | Integer | 1分钟 | 用户请求限流计数 |
-| rate_limit:key:{key_id} | Integer | 1分钟 | 密钥请求限流计数 |
-| available_keys:{provider} | List | 5分钟 | 缓存可用的厂商密钥 |
+| `available_keys:{provider}` | List | 5分钟 | 缓存可用厂商密钥列表，减少路由时的 DB 查询 |
+| `api_key:{key}` | String | 1小时 | 缓存平台密钥 → 用户 ID 的映射，加速认证 |
+
+> **积分余额缓存**：仅在 SQLite 模式（`_SQLiteBackend`）下存在，以进程内 `dict` 实现，不使用 `MemoryCache`；MySQL 模式直接读写 DB，无余额缓存。
 
 ## 5. 部署与配置
 
@@ -677,20 +686,20 @@ export JWT_SECRET=your-jwt-secret
 
 | 值 | 含义 | 对调用的影响 |
 |----|------|-------------|
-| 0 | 正常 | 可正常被路由选中 |
-| 1 | 已删除 | 不会被选中；列表接口通常过滤此状态 |
+| 0 | 正常 | 可被路由选中；若 `cooldown_until` 非 null 且未过期则处于超限冷却中，暂不可用，过期后懒恢复 |
+| 1 | 已删除 | 不会被选中；列表接口过滤此状态 |
 | 2 | 已禁用 | 不会被选中；可由管理员恢复 |
-| 3 | 超限 | 厂商返回额度超限错误时自动标记；冷却后可恢复 |
-| 4 | 无效 | 厂商返回认证失败时自动标记；需用户更换 key |
+| 4 | 无效 | 厂商返回认证失败（401/403）时自动标记；需用户更换 key |
+
+> **超限冷却**不单独占用一个 status 值。冷却状态由 `status=0` + `cooldown_until`（非 null）共同表达，冷却到期后系统在下次路由时懒恢复（清除 `cooldown_until`），无需定时任务。
 
 #### 积分变动类型枚举
 
 | 值 | 含义 | 触发场景 |
 |----|------|---------|
-| 1 | 调用消耗 | 用户使用平台密钥调用对话接口，扣减积分 |
+| 1 | 调用消耗 | 用户使用平台密钥调用对话接口，固定扣减 **10 积分/次**，失败自动回滚 |
 | 2 | 托管收益 | 用户的厂商密钥被平台调用，自动获得积分奖励 |
 | 3 | 管理员调整 | 管理员手动通过 `/api/admin/points` 增减积分 |
-| 4 | 平台收入 | 平台抽取的差价（预留，当前版本未启用） |
 
 #### 厂商枚举（provider 白名单）
 
@@ -772,37 +781,63 @@ flowchart TD
 
 ### 6.3 积分更新流程
 
+积分服务采用策略模式，两种 driver 下流程不同：
+
+**SQLite 模式（内存缓存 + 异步 flush）**
+
 ```mermaid
 sequenceDiagram
     participant API as API网关
-    participant Points as 积分服务
-    participant Cache as 缓存
+    participant Points as 积分服务(SQLiteBackend)
+    participant Mem as 内存余额
+    participant Queue as PendingLog队列
     participant DB as 数据库
-    
-    API->>Points: 请求预扣积分
-    Points->>Cache: 获取用户积分余额
-    Cache-->>Points: 返回余额
-    Points->>Points: 检查余额是否足够
+
+    API->>Points: pre_deduct(user_id, 10)
+    Points->>Mem: 读取余额（懒加载，首次从DB）
     alt 余额足够
-        Points->>Cache: 预扣积分
-        Points-->>API: 预扣成功
-        API->>API: 处理业务逻辑
-        API->>Points: 确认扣费
-        Points->>Cache: 更新积分
-        Points->>DB: 异步更新数据库
+        Points->>Mem: 原子扣减（per-user锁，<1ms）
+        Points-->>API: True
+        API->>API: 调用厂商 LLM
+        API->>Points: confirm_deduct
+        Points->>Queue: 写 PendingLog
+        Note over Queue,DB: 后台任务每秒 flush 批量落库
     else 余额不足
-        Points-->>API: 余额不足
-        API-->>Client: 返回错误
+        Points-->>API: False
+        API-->>Client: 400 积分不足
+    end
+```
+
+**MySQL 模式（直写 DB）**
+
+```mermaid
+sequenceDiagram
+    participant API as API网关
+    participant Points as 积分服务(MySQLBackend)
+    participant DB as 数据库
+
+    API->>Points: pre_deduct(user_id, 10)
+    Points->>DB: UPDATE users SET balance=balance-10 WHERE id=? AND balance>=10
+    alt affected_rows=1（扣减成功）
+        Points-->>API: True
+        API->>API: 调用厂商 LLM
+        API->>Points: confirm_deduct
+        Points->>DB: INSERT point_logs
+    else affected_rows=0（余额不足）
+        Points-->>API: False
+        API-->>Client: 400 积分不足
     end
 ```
 
 ## 8. 性能优化策略
 
-1. **缓存优化**：使用内存缓存积分余额和API密钥信息，减少数据库访问
-2. **批量更新**：积分更新等高频操作采用批量异步更新，减少数据库写入次数
-3. **连接池**：使用数据库连接池，减少连接建立和关闭的开销
-4. **异步处理**：使用FastAPI的异步特性，提高并发处理能力
-5. **密钥管理**：定期清理无效密钥，优化密钥选择算法
+1. **积分双后端策略**：
+   - SQLite 模式：内存余额 + per-user 锁 + 后台异步 flush，持锁时间 < 1ms，避免文件锁竞争
+   - MySQL 模式：行级 `UPDATE ... WHERE balance >= amount` 原子操作，直接写 DB，AI 响应数秒期间 DB 毫秒级写入不是瓶颈
+2. **密钥缓存**：可用厂商密钥列表缓存 5 分钟，认证密钥缓存 1 小时，减少路由热路径 DB 查询
+3. **连接池**：MySQL 模式配置连接池（默认 pool_size=10，max_overflow=20，pool_recycle=1800s 防 8h 断连）
+4. **异步处理**：FastAPI 全链路异步，厂商 HTTP 调用使用 `httpx` 异步客户端，不阻塞事件循环
+5. **密钥选择随机化**：从可用密钥中随机选取，避免单 key 热点，均摊调用压力
 
 ## 9. 安全措施
 

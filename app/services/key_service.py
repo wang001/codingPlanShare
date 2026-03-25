@@ -75,27 +75,31 @@ class KeyService:
         return db.query(ApiKey).filter(ApiKey.id == key_id).first()
 
     @staticmethod
-    def get_key_by_value(db: Session, key_value: str) -> Optional[ApiKey]:
-        """通过密钥值获取API密钥"""
+    def get_key_by_value(db: Session, key_value: str):
+        """
+        通过密钥值获取API密钥。
+        缓存层存 plain dict（避免 session 关闭后 DetachedInstanceError），
+        返回 SimpleNamespace，字段访问方式与 ApiKey ORM 对象一致。
+        """
         cache_key = f"api_key:{key_value}"
-        cached_key = cache.get(cache_key)
-        if cached_key is not None:
-            return cached_key
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return KeyService._dict_to_key(cached)
 
         key = db.query(ApiKey).filter(ApiKey.encrypted_key == key_value).first()
-
         if key:
-            cache.set(cache_key, key, expire_seconds=3600)
-        return key
+            cache.set(cache_key, KeyService._key_to_dict(key), expire_seconds=3600)
+            return key  # 首次从 DB 查到，直接返回 ORM 对象（session 仍开着，安全）
+        return None
 
     @staticmethod
     def _lazy_recover_cooldown(db: Session, key: ApiKey) -> bool:
         """
-        懒恢复：如果 key 处于超限冷却（status=3）且冷却时间已过期，
-        自动恢复为正常（status=0），清除 cooldown_until。
-        返回 True 表示已恢复，False 表示仍在冷却中或不需要处理。
+        懒恢复：如果 key 的 cooldown_until 非 null 且已过期，清除冷却标记。
+        冷却状态由 status=0 + cooldown_until 共同表达，status 本身不变。
+        返回 True 表示已恢复（冷却过期），False 表示仍在冷却中或无冷却。
         """
-        if key.status != 3 or key.cooldown_until is None:
+        if key.cooldown_until is None:
             return False
 
         now = datetime.now(timezone.utc)
@@ -105,61 +109,86 @@ class KeyService:
             cooldown = cooldown.replace(tzinfo=timezone.utc)
 
         if now >= cooldown:
-            # 冷却已过期，懒恢复
-            key.status = 0
+            # 冷却已过期，清除 cooldown_until，不修改 status
             key.cooldown_until = None
             db.commit()
-            # 清除缓存，让后续查询读到最新状态
             if key.provider:
                 cache.delete(f"available_keys:{key.provider}")
-            logger.info(f"[KeyService] key_id={key.id} 冷却已过期，已懒恢复为正常状态")
+            logger.info(f"[KeyService] key_id={key.id} 冷却已过期，已恢复为可用")
             return True
         return False
 
     @staticmethod
+    def _key_to_dict(key: ApiKey) -> dict:
+        """将 ApiKey ORM 对象序列化为 plain dict，用于安全缓存（避免 DetachedInstanceError）。"""
+        return {
+            "id":            key.id,
+            "user_id":       key.user_id,
+            "key_type":      key.key_type,
+            "provider":      key.provider,
+            "encrypted_key": key.encrypted_key,
+            "name":          key.name,
+            "status":        key.status,
+            "used_count":    key.used_count,
+            "last_used_at":  key.last_used_at,
+            "created_at":    key.created_at,
+        }
+
+    @staticmethod
+    def _dict_to_key(d: dict):
+        """
+        将 plain dict 还原为轻量对象（types.SimpleNamespace），字段访问方式与 ApiKey 完全一致。
+        不绑定 session，不会触发 DetachedInstanceError，仅用于读取字段（id/key_type/encrypted_key 等）。
+        """
+        from types import SimpleNamespace
+        return SimpleNamespace(**d)
+
+    @staticmethod
     def get_available_provider_keys(db: Session, provider: str) -> List[ApiKey]:
         """
-        获取可用的厂商密钥（status=0，且不在冷却期内）。
-        内含懒恢复逻辑：对 status=3 但冷却已过期的 key 自动恢复。
+        获取可用的厂商密钥。
+        可用条件：status=0 且（cooldown_until 为 null 或已过期）。
+        冷却到期的 key 在此处懒恢复（清除 cooldown_until）。
+        结果缓存 5 分钟（存 plain dict，避免 DetachedInstanceError）。
         """
-        # 查询 status=0（正常）的 key，以及 status=3（超限）的 key（后者用于懒恢复检查）
+        cache_key = f"available_keys:{provider}"
+        cached = cache.get(cache_key)
+        if cached is not None:
+            return [KeyService._dict_to_key(d) for d in cached]
+
         all_keys = db.query(ApiKey).filter(
             ApiKey.key_type == 2,
             ApiKey.provider == provider,
-            ApiKey.status.in_([0, 3]),
+            ApiKey.status == 0,
         ).all()
 
-        now = datetime.now(timezone.utc)
         available = []
         for key in all_keys:
-            if key.status == 3:
-                # 懒恢复检查
+            if key.cooldown_until is None:
+                available.append(key)
+            else:
                 recovered = KeyService._lazy_recover_cooldown(db, key)
                 if recovered:
                     available.append(key)
-                # 否则仍在冷却，跳过
-            else:
-                # status=0，正常可用
-                available.append(key)
 
+        # 序列化为 plain dict 再缓存，防止 session 关闭后 ORM 对象失效
+        cache.set(cache_key, [KeyService._key_to_dict(k) for k in available], expire_seconds=300)
         return available
 
     @staticmethod
     def mark_key_rate_limited(db: Session, key_id: int):
         """
         标记厂商密钥遭遇 429/rate limit。
-        设置 status=3（超限，冷却中），cooldown_until = now + 1h。
-        区别于 status=4（无效，需人工更换），超限冷却后可自动恢复。
+        只写 cooldown_until = now + 1h，status 保持 0 不变。
+        冷却状态由 status=0 + cooldown_until 共同表达，过期后懒恢复（清除 cooldown_until）。
         """
         key = db.query(ApiKey).filter(ApiKey.id == key_id).first()
         if not key:
             return
         cooldown_until = datetime.now(timezone.utc) + timedelta(seconds=RATE_LIMIT_COOLDOWN_SECONDS)
-        key.status = 3
         key.cooldown_until = cooldown_until
         db.commit()
 
-        # 清除缓存
         if key.provider:
             cache.delete(f"available_keys:{key.provider}")
         logger.warning(

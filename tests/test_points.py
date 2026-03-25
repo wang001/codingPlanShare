@@ -1,7 +1,7 @@
 import pytest
 from sqlalchemy.orm import Session
 from app.models.user import User
-from app.services.points_service import PointsService, _balances
+from app.services.points_service import PointsService
 
 
 # 测试获取用户余额

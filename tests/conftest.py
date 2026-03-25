@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 from app.db.database import Base
-from app.services.points_service import _balances
 
 
 @pytest.fixture(scope="function")
@@ -16,7 +15,6 @@ def db():
     每个测试函数使用独立的内存 SQLite 数据库。
     测试结束后自动清理表结构和内存积分缓存。
     """
-    # 每次创建全新的内存 DB，完全隔离
     test_engine = create_engine(
         "sqlite:///:memory:",
         connect_args={"check_same_thread": False},
@@ -36,8 +34,11 @@ def db():
 
     yield session
 
-    # 清理
-    _balances.clear()
+    # 清理内存积分缓存（仅 SQLiteBackend 有效）
+    from app.services.points_service import _backend, _SQLiteBackend
+    if isinstance(_backend, _SQLiteBackend):
+        _backend._balances.clear()
+
     session.close()
     Base.metadata.drop_all(bind=test_engine)
 
