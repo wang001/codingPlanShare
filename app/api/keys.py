@@ -67,8 +67,11 @@ def update_api_key(key_id: int, request: ApiKeyUpdate, current_user: User = Depe
     if request.name is not None:
         key.name = request.name
     if request.status is not None:
-        key.status = request.status
-    
+        # 走 update_key_status 确保同步清缓存（available_keys / api_key）
+        KeyService.update_key_status(db, key_id, request.status)
+        db.refresh(key)
+        return key
+
     db.commit()
     db.refresh(key)
     return key

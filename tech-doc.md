@@ -4,12 +4,12 @@
 
 | 类别 | 技术 | 版本 | 选型理由 |
 |------|------|------|----------|
-| 后端语言 | Python | 3.7+ | 简单易用，生态丰富，适合快速开发API服务 |
+| 后端语言 | Python | 3.11+ | 简单易用，生态丰富，适合快速开发API服务 |
 | Web框架 | FastAPI | 0.104.1 | 高性能，自动生成API文档，支持异步处理 |
-| 数据库 | SQLite | 3.0+ | 轻量级，无需额外服务，适合Demo期使用 |
-| 缓存 | 内存缓存 | - | 轻量级，无需额外服务，适合Demo期使用 |
+| 数据库 | SQLite / MySQL | 3.0+ / 8.0+ | 双驱动支持：SQLite 单机部署开箱即用；MySQL 支持多实例无状态水平扩展 |
+| 进程内缓存 | 内存 dict + per-user 锁 | - | 仅 SQLite 模式使用，避免文件锁热点；MySQL 模式无此层，直接走行锁 |
 | 认证 | JWT | - | 无状态认证，便于水平扩展 |
-| 加密 | cryptography | 41.0.7 | 提供简单的加密功能，用于密钥加密 |
+| 加密 | cryptography | 41.0.7 | Fernet 对称加密，用于厂商密钥落库加密 |
 | 测试 | pytest | 7.4.3 | 流行的Python测试框架，支持单元测试和集成测试 |
 
 ## 2. 系统架构设计
@@ -22,9 +22,10 @@ flowchart TD
     B --> C[业务逻辑层]
     C --> D[数据访问层]
     C --> E[外部LLM厂商]
-    D --> F[SQLite数据库]
-    C --> G[内存缓存]
-    H[管理后台] --> C
+    D --> F[(SQLite\n单机模式)]
+    D --> G[(MySQL\n无状态模式)]
+    C --> H[进程内余额缓存\nSQLite模式专用]
+    I[管理后台] --> C
 ```
 
 ### 2.2 核心模块划分
@@ -106,36 +107,36 @@ flowchart TD
 
 #### 3.1.2 请求处理流程
 
+> SQLite 模式下积分操作走进程内缓存；MySQL 模式下直接走 DB，无缓存层。
+
 ```mermaid
 sequenceDiagram
     participant Client as 客户端
     participant API as API网关
     participant Auth as 认证服务
+    participant Points as 积分服务
     participant Router as 路由服务
     participant Provider as 厂商适配器
-    participant Points as 积分服务
     participant DB as 数据库
-    participant Cache as 内存缓存
 
     Client->>API: 发送请求
-    API->>Auth: 验证API密钥
+    API->>Auth: 验证API密钥（含缓存加速）
     Auth-->>API: 验证结果
-    API->>Points: 预扣积分
-    Points->>Cache: 检查积分余额
-    Cache-->>Points: 积分余额
-    Points->>Cache: 预扣积分
-    Points-->>API: 预扣结果
-    API->>Router: 路由请求
-    Router->>Provider: 选择厂商并转发请求
-    Provider->>Provider: 适配参数
+    API->>Points: pre_deduct（预扣积分）
+    Note over Points: SQLite：内存原子扣减<br/>MySQL：UPDATE balance WHERE balance>=amount
+    Points-->>API: 预扣成功/余额不足
+    API->>Router: 路由请求（选择厂商密钥）
+    Router->>Provider: 转发请求
     Provider->>Provider: 调用厂商API
-    Provider-->>Router: 厂商响应
-    Router->>Router: 标准化响应
-    Router-->>API: 处理结果
-    API->>Points: 确认扣费/回滚
-    Points->>Cache: 更新积分
-    Points->>DB: 异步更新数据库
-    API-->>Client: 返回响应
+    Provider-->>API: 厂商响应
+    alt 调用成功
+        API->>Points: confirm_deduct（确认扣费）
+        Note over Points,DB: SQLite：写 PendingLog 队列，后台异步 flush<br/>MySQL：直接 INSERT point_logs
+        API-->>Client: 返回响应
+    else 调用失败（HTTP层错误）
+        API->>Points: rollback（回滚积分）
+        API-->>Client: 返回错误
+    end
 ```
 
 ### 3.2 业务逻辑模块
@@ -148,10 +149,29 @@ sequenceDiagram
 
 #### 3.2.2 积分服务
 
-- 管理用户积分余额
-- 处理积分预扣和确认
-- 实现积分变动记录
-- 提供积分余额查询
+采用**策略模式（Strategy Pattern）**，根据数据库 driver 自动切换后端实现：
+
+| 模式 | driver | 实现方式 | 适用场景 |
+|------|--------|---------|---------|
+| SQLiteBackend | sqlite | 进程内余额缓存 + per-user 锁 + 异步 delta flush | 单机部署，开箱即用 |
+| MySQLBackend | mysql | 直接写 DB，MySQL 行锁保证并发安全 | 多实例无状态水平扩展 |
+
+**SQLiteBackend 详细说明：**
+- 启动时懒加载用户余额到进程内 `dict`，`pre_deduct` 纯内存原子扣减（持锁 < 1ms），避免 SQLite 文件锁热点
+- 所有积分变动（用户扣减、管理员调分）均只写内存，产生 `PendingLog`（含 `delta` 增量）入队
+- 后台任务每秒执行 `flush_to_db()`，用 `UPDATE balance = balance + delta` **增量写**落库
+- 增量写而非绝对值覆盖，保证多批 flush 间无竞争漂移，顺序无关，天然幂等
+- 进程重启后从 DB 重新懒加载，未 flush 的 pending 记录会丢失（SQLite 单机场景可接受）
+
+**MySQLBackend 详细说明：**
+- `pre_deduct` 通过 `UPDATE ... WHERE balance >= amount` 原子扣减，`rowcount=0` 即余额不足
+- 每次操作直接写 DB，利用 MySQL InnoDB 行锁保证并发安全
+- AI 响应本身耗时数秒，DB 写入毫秒级，无需缓存层；`flush_to_db()` 为空操作
+- 无进程内状态，天然支持多实例水平部署
+
+**共同特性：**
+- 计费单价：固定 **10 积分/次**，每次成功调用扣减，失败（含重试耗尽）自动回滚
+- 对外统一暴露 `PointsService`，调用方零感知 driver 切换
 
 #### 3.2.3 密钥管理服务
 
@@ -201,9 +221,10 @@ sequenceDiagram
 | user_id | INTEGER | 所属用户 ID，外键关联 users.id |
 | key_type | INTEGER | 密钥类型：1 - 平台调用密钥，2 - 用户托管的厂商密钥 |
 | provider | TEXT | 厂商类型（仅厂商密钥有效）：minimax, zhipu, alibaba, tencent, baidu 等 |
-| encrypted_key | TEXT | 加密后的密钥内容 |
+| encrypted_key | TEXT | 加密后的密钥内容（平台密钥存明文，厂商密钥加密存储） |
 | name | TEXT | 密钥名称 |
-| status | INTEGER | 状态：0 - 正常，1 - 删除， 2 - 禁用，3 - 超限，4 - 无效 |
+| status | INTEGER | 状态：0 - 正常，1 - 删除，2 - 禁用，3 - 超限冷却，4 - 无效 |
+| cooldown_until | DATETIME | 冷却截止时间（status=3 超限冷却时使用，到期自动恢复） |
 | used_count | INTEGER | 累计调用次数 |
 | last_used_at | INTEGER | 最后使用时间戳 |
 | created_at | INTEGER | 创建时间戳 |
@@ -215,7 +236,7 @@ sequenceDiagram
 | id | INTEGER | 主键，自增 |
 | user_id | INTEGER | 所属用户 ID |
 | amount | INTEGER | 变动数量，正数为增加，负数为扣减 |
-| type | INTEGER | 变动类型：1 - 调用消耗，2 - 托管收益，3 - 管理员调整，4 - 平台收入 |
+| type | INTEGER | 变动类型：1 - 调用消耗，2 - 托管收益，3 - 管理员调整 |
 | related_key_id | INTEGER | 关联的密钥 ID |
 | model | TEXT | 关联的模型 |
 | remark | TEXT | 备注 |
@@ -243,73 +264,146 @@ sequenceDiagram
 
 ### 4.2 缓存设计
 
+系统使用进程内 `MemoryCache`（分段锁实现），当前仅用于密钥路由层：
+
 | 缓存键 | 类型 | 过期时间 | 用途 |
 |--------|------|----------|------|
-| user:balance:{user_id} | Integer | 1小时 | 缓存用户积分余额 |
-| api_key:{key} | String | 1小时 | 缓存API密钥信息 |
-| rate_limit:user:{user_id} | Integer | 1分钟 | 用户请求限流计数 |
-| rate_limit:key:{key_id} | Integer | 1分钟 | 密钥请求限流计数 |
-| available_keys:{provider} | List | 5分钟 | 缓存可用的厂商密钥 |
+| `available_keys:{provider}` | List | 5分钟 | 缓存可用厂商密钥列表，减少路由时的 DB 查询 |
+| `api_key:{key}` | String | 1小时 | 缓存平台密钥 → 用户 ID 的映射，加速认证 |
+
+> **积分余额缓存**：仅在 SQLite 模式（`_SQLiteBackend`）下存在，以进程内 `dict` 实现，不使用 `MemoryCache`；MySQL 模式直接读写 DB，无余额缓存。
 
 ## 5. 部署与配置
 
 ### 5.1 环境要求
 
-- Python 3.7+
-- SQLite 3.0+
+- Python 3.11+
+- SQLite 3.0+（本地开发）或 MySQL 8.0+（生产部署）
+- PyMySQL（使用 MySQL 时需要）
 
 ### 5.2 安装步骤
 
 1. 克隆代码仓库
-2. 创建虚拟环境：`python -m venv venv`
-3. 激活虚拟环境：`venv\Scripts\activate` (Windows) 或 `source venv/bin/activate` (Linux/Mac)
-4. 安装依赖：`pip install -r requirements.txt`
-5. 初始化数据库：`python init_db.py`
-6. 启动服务：`uvicorn app.main:app --host 0.0.0.0 --port 3000`
+2. 安装依赖：`pip install -r requirements.txt`
+3. 配置环境变量（见 5.4 节）
+4. 初始化数据库：`python init_db.py`
+5. 启动服务：`uvicorn app.main:app --host 0.0.0.0 --port 3000`
 
-### 5.3 配置文件
+### 5.3 配置文件（config.yaml）
+
+`config.yaml` 只存放**非敏感配置**，可以提交到 Git。密码、密钥等敏感信息通过环境变量注入（格式：`${ENV_VAR_NAME}`），启动时自动展开。
+
+#### SQLite 模式（本地开发）
 
 ```yaml
-# config.yaml
-# 管理员配置
-admin:
-  password: "admin123" # 管理员密码，首次登录后可修改
-
-# 数据库配置
 database:
   driver: "sqlite"
-  path: "./data/app.db" # SQLite数据库文件路径
+  path: "./data/app.db"
+```
+
+#### MySQL 模式（生产推荐）
+
+```yaml
+database:
+  driver: "mysql"
+  host: "your-mysql-host"
+  port: 3306
+  user: "${DB_USER}"        # 从环境变量读取
+  password: "${DB_PASSWORD}" # 从环境变量读取
+  name: "your_database_name"
+  pool_size: 20             # 连接池大小（生产建议 10~20）
+  max_overflow: 40          # 超出 pool_size 时最多额外创建的连接数
+  pool_recycle: 1800        # 连接空闲超过此秒数后自动重建（防 MySQL 8h 断连）
+```
+
+#### 完整 config.yaml 示例
+
+```yaml
+# 管理员配置
+admin:
+  password: "admin123"
+
+# 数据库配置（见上方 SQLite / MySQL 两种模式）
+database:
+  driver: "mysql"
+  host: "your-mysql-host"
+  port: 3306
+  user: "${DB_USER}"
+  password: "${DB_PASSWORD}"
+  name: "coding_plan_share"
+  pool_size: 20
+  max_overflow: 40
+  pool_recycle: 1800
 
 # 限流配置
 rate_limit:
-  user_rpm: 60 # 单个用户每分钟最大请求数
-  default_provider_rpm: 30 # 厂商密钥默认每分钟最大请求数
+  user_rpm: 60
+  default_provider_rpm: 30
 
-# 加密配置
+# 加密配置（值从环境变量读取）
 security:
-  encryption_key: "your-encryption-key" # 用于加密用户厂商密钥的密钥
-  jwt_secret: "your-jwt-secret" # 用于登录令牌的密钥
+  encryption_key: "${ENCRYPTION_KEY}"
+  jwt_secret: "${JWT_SECRET}"
 
 # 超时配置
 timeout:
-  request_timeout: 5 # 请求超时时间，单位：秒
+  request_timeout: 5
 
 # 密钥管理配置
 key_management:
-  max_retry: 1 # 密钥失败后最大重试次数
-  cool_down_period: 7200 # 密钥超限时的冷却时间，单位：秒
-  max_concurrency: 1 # 每个密钥的最大并发数
-
-# 缓存配置
-cache:
-  enabled: true
-  type: "memory"  # 内存缓存
+  max_retry: 1
+  cool_down_period: 7200
 
 # 日志配置
 logging:
   level: "INFO"
   format: "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
 ```
+
+### 5.4 环境变量配置
+
+敏感信息**不写入 config.yaml**，通过环境变量或 `.env` 文件注入。`.env` 已加入 `.gitignore`，不会提交到代码仓库。
+
+#### 方式一：`.env` 文件（本地开发推荐）
+
+```bash
+# 复制模板
+cp .env.example .env
+# 编辑填入真实值
+```
+
+`.env` 文件内容：
+
+```bash
+# 数据库
+DB_USER=your_db_user
+DB_PASSWORD=your_db_password
+
+# 安全
+ENCRYPTION_KEY=your-32-char-fernet-key   # 加密厂商密钥用
+JWT_SECRET=your-jwt-secret-key           # 登录 token 签名用
+```
+
+#### 方式二：系统环境变量（生产/容器部署推荐）
+
+```bash
+# Linux / Docker ENV / K8s Secret
+export DB_USER=your_db_user
+export DB_PASSWORD=your_db_password
+export ENCRYPTION_KEY=your-encryption-key
+export JWT_SECRET=your-jwt-secret
+```
+
+> **优先级**：系统环境变量 > `.env` 文件 > config.yaml 占位符默认值
+
+#### 环境变量一览
+
+| 变量名 | 说明 | 是否必填 |
+|--------|------|----------|
+| `DB_USER` | 数据库用户名（MySQL 模式必填） | MySQL 必填 |
+| `DB_PASSWORD` | 数据库密码（MySQL 模式必填） | MySQL 必填 |
+| `ENCRYPTION_KEY` | 厂商密钥加密主密钥（Fernet） | 必填 |
+| `JWT_SECRET` | JWT 签名密钥 | 必填 |
 
 ## 6. API 接口文档
 
@@ -605,20 +699,20 @@ logging:
 
 | 值 | 含义 | 对调用的影响 |
 |----|------|-------------|
-| 0 | 正常 | 可正常被路由选中 |
-| 1 | 已删除 | 不会被选中；列表接口通常过滤此状态 |
+| 0 | 正常 | 可被路由选中；若 `cooldown_until` 非 null 且未过期则处于超限冷却中，暂不可用，过期后懒恢复 |
+| 1 | 已删除 | 不会被选中；列表接口过滤此状态 |
 | 2 | 已禁用 | 不会被选中；可由管理员恢复 |
-| 3 | 超限 | 厂商返回额度超限错误时自动标记；冷却后可恢复 |
-| 4 | 无效 | 厂商返回认证失败时自动标记；需用户更换 key |
+| 4 | 无效 | 厂商返回认证失败（401/403）时自动标记；需用户更换 key |
+
+> **超限冷却**不单独占用一个 status 值。冷却状态由 `status=0` + `cooldown_until`（非 null）共同表达，冷却到期后系统在下次路由时懒恢复（清除 `cooldown_until`），无需定时任务。
 
 #### 积分变动类型枚举
 
 | 值 | 含义 | 触发场景 |
 |----|------|---------|
-| 1 | 调用消耗 | 用户使用平台密钥调用对话接口，扣减积分 |
+| 1 | 调用消耗 | 用户使用平台密钥调用对话接口，固定扣减 **10 积分/次**，失败自动回滚 |
 | 2 | 托管收益 | 用户的厂商密钥被平台调用，自动获得积分奖励 |
 | 3 | 管理员调整 | 管理员手动通过 `/api/admin/points` 增减积分 |
-| 4 | 平台收入 | 平台抽取的差价（预留，当前版本未启用） |
 
 #### 厂商枚举（provider 白名单）
 
@@ -644,7 +738,7 @@ logging:
 
 ## 7. 关键流程设计
 
-### 6.1 模型调用流程
+### 7.1 模型调用流程
 
 ```mermaid
 sequenceDiagram
@@ -676,7 +770,7 @@ sequenceDiagram
     API-->>Client: 返回响应
 ```
 
-### 6.2 密钥失效处理流程
+### 7.2 密钥失效处理流程
 
 ```mermaid
 flowchart TD
@@ -698,39 +792,69 @@ flowchart TD
     L --> M
 ```
 
-### 6.3 积分更新流程
+### 7.3 积分更新流程
+
+积分服务采用策略模式，两种 driver 下流程不同：
+
+**SQLite 模式（进程内缓存 + 异步 delta flush）**
 
 ```mermaid
 sequenceDiagram
     participant API as API网关
-    participant Points as 积分服务
-    participant Cache as 缓存
+    participant Points as 积分服务(SQLiteBackend)
+    participant Mem as 进程内余额dict
+    participant Queue as PendingLog队列
     participant DB as 数据库
-    
-    API->>Points: 请求预扣积分
-    Points->>Cache: 获取用户积分余额
-    Cache-->>Points: 返回余额
-    Points->>Points: 检查余额是否足够
+
+    API->>Points: pre_deduct(user_id, 10)
+    Points->>Mem: 懒加载（首次从DB读取）
     alt 余额足够
-        Points->>Cache: 预扣积分
-        Points-->>API: 预扣成功
-        API->>API: 处理业务逻辑
-        API->>Points: 确认扣费
-        Points->>Cache: 更新积分
-        Points->>DB: 异步更新数据库
+        Points->>Mem: 原子扣减（per-user锁，<1ms）
+        Points-->>API: True
+        API->>API: 调用厂商 LLM
+        API->>Points: confirm_deduct
+        Points->>Queue: 写 PendingLog(delta=-10)
+        Note over Queue,DB: 后台任务每秒 flush<br/>UPDATE balance = balance + delta（增量写）
     else 余额不足
-        Points-->>API: 余额不足
-        API-->>Client: 返回错误
+        Points-->>API: False
+        API-->>Client: 400 积分不足
     end
 ```
 
+> **管理员调分同路径**：`add_points` 也只写内存 + 入队（delta 为正），统一由 flush 落库，无需 `invalidate_cache`。
+
+**MySQL 模式（直写 DB，无状态）**
+
+```mermaid
+sequenceDiagram
+    participant API as API网关
+    participant Points as 积分服务(MySQLBackend)
+    participant DB as 数据库
+
+    API->>Points: pre_deduct(user_id, 10)
+    Points->>DB: UPDATE users SET balance=balance-10 WHERE id=? AND balance>=10
+    alt affected_rows=1（扣减成功）
+        Points-->>API: True
+        API->>API: 调用厂商 LLM
+        API->>Points: confirm_deduct
+        Points->>DB: INSERT point_logs
+    else affected_rows=0（余额不足）
+        Points-->>API: False
+        API-->>Client: 400 积分不足
+    end
+```
+
+> **无状态特性**：MySQLBackend 无进程内状态，多个实例并发操作同一 DB 行锁互不干扰，可水平扩展。
+
 ## 8. 性能优化策略
 
-1. **缓存优化**：使用内存缓存积分余额和API密钥信息，减少数据库访问
-2. **批量更新**：积分更新等高频操作采用批量异步更新，减少数据库写入次数
-3. **连接池**：使用数据库连接池，减少连接建立和关闭的开销
-4. **异步处理**：使用FastAPI的异步特性，提高并发处理能力
-5. **密钥管理**：定期清理无效密钥，优化密钥选择算法
+1. **积分双后端策略**：
+   - SQLite 模式：进程内余额 dict + per-user 锁（持锁 < 1ms），后台每秒异步 flush，用 `balance + delta` 增量写避免文件锁热点和绝对值覆盖竞争
+   - MySQL 模式：行级 `UPDATE ... WHERE balance >= amount` 原子操作，直接写 DB，AI 响应数秒期间 DB 毫秒级写入不是瓶颈，无进程内状态，天然支持多实例
+2. **密钥缓存**：可用厂商密钥列表缓存 5 分钟，认证密钥缓存 1 小时，减少路由热路径 DB 查询
+3. **连接池**：MySQL 模式配置连接池（默认 pool_size=10，max_overflow=20，pool_recycle=1800s 防 8h 断连）
+4. **异步处理**：FastAPI 全链路异步，厂商 HTTP 调用使用 `httpx` 异步客户端，不阻塞事件循环
+5. **密钥选择随机化**：从可用密钥中随机选取，避免单 key 热点，均摊调用压力
 
 ## 9. 安全措施
 
@@ -890,11 +1014,16 @@ codingPlanShare/
 │   └── main.py
 ├── tests/
 │   ├── __init__.py
+│   ├── conftest.py                # pytest fixture（内存 DB 隔离）
 │   ├── test_auth.py
 │   ├── test_points.py
 │   ├── test_keys.py
-│   ├── test_router.py
-│   └── test_providers.py
+│   ├── test_concurrent_points.py  # 并发积分安全测试
+│   ├── test_chat_bug_fixes.py     # 积分扣减回归测试（Bug1/2/3）
+│   ├── test_model_dump.py
+│   ├── test_chat.py               # 集成测试（需运行中的服务）
+│   ├── test_chat_stream.py        # 流式集成测试（需运行中的服务）
+│   └── test_provider.py           # 厂商适配器测试（需真实 API Key）
 ├── data/
 │   └── app.db
 ├── config.yaml
@@ -964,6 +1093,16 @@ docker run -d -p 3000:3000 -v ./data:/app/data llm-gateway
 
 ## 14. 总结
 
-本技术方案基于FastAPI和SQLite，实现了一个轻量级的LLM API聚合计费路由器，支持多厂商API适配、积分计费、密钥管理和自动重试等核心功能。方案采用模块化设计，便于后续扩展和维护，同时通过缓存和异步处理等技术优化性能，满足Demo期的使用需求。
+本技术方案基于 FastAPI 实现了一个轻量级的 LLM API 聚合计费网关，支持多厂商 API 适配、积分计费、密钥管理和自动重试等核心功能。
 
-通过本方案的实施，可以快速构建一个功能完整、性能可靠的LLM API聚合服务，为开发者提供统一的接口和低成本的模型调用服务。
+**两种部署模式，满足不同场景：**
+
+| 维度 | SQLite 单机模式 | MySQL 无状态模式 |
+|------|---------------|----------------|
+| 定位 | 本地开发、单机运营、快速上线 | 生产环境、多实例水平扩展 |
+| 积分写入 | 进程内缓存 + 后台异步 delta flush | 直接写 DB，行锁保证原子性 |
+| 进程状态 | 有（余额 dict，重启后从 DB 重载） | 无（任意实例可随时重启/扩容） |
+| 依赖 | 仅 Python + SQLite，零外部依赖 | 需外部 MySQL 8.0+ |
+| 切换成本 | 修改 `config.yaml` 中 `driver` 字段，重启即可 | |
+
+方案采用策略模式（`PointsBackend` 抽象接口）隔离两套实现，调用层零感知 driver 差异，可在开发阶段用 SQLite 快速验证，上线时切换 MySQL 无需改代码。

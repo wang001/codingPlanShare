@@ -76,10 +76,11 @@ class BackgroundTasks:
         """
         在 asyncio 线程池中执行同步的 flush_to_db()，
         不阻塞事件循环，保证 FastAPI 正常处理其他请求。
+        使用 get_running_loop()（Python 3.10+ 推荐），避免 DeprecationWarning。
         """
         self._flush_in_progress = True
         try:
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, flush_to_db)
         except Exception as e:
             logger.error("[BackgroundTasks] flush 异常: %s", e)

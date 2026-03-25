@@ -1,19 +1,7 @@
 import pytest
 from sqlalchemy.orm import Session
-from app.db.database import get_db, Base, engine
 from app.models.user import User
 from app.services.auth_service import AuthService
-
-# 创建测试数据库
-@pytest.fixture(scope="function")
-def db():
-    # 创建表
-    Base.metadata.create_all(bind=engine)
-    db = next(get_db())
-    yield db
-    # 清理表
-    Base.metadata.drop_all(bind=engine)
-    db.close()
 
 # 测试用户认证
 def test_authenticate_user(db: Session):

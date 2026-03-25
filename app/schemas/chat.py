@@ -55,6 +55,15 @@ class Usage(BaseModel):
     total_tokens: int = Field(..., description="总 token 数（prompt_tokens + completion_tokens）")
 
 
+class EmbeddingsRequest(BaseModel):
+    model: str = Field(
+        ...,
+        description="模型名称，格式为 `provider/真实模型名`",
+        example="modelscope/text-embedding-v3",
+    )
+    input: str = Field(..., description="需要向量化的文本")
+
+
 class ChatCompletionResponse(BaseModel):
     id: str = Field(..., description="本次响应的唯一 ID")
     object: str = Field(default="chat.completion", description="响应类型，固定值 chat.completion")

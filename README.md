@@ -237,11 +237,11 @@ codingPlanShare/
 
 ## 🗺️ Roadmap
 
-- [ ] 按 token 计费（当前按次计费）
+- [ ] 按 token 计费（当前按次计费，固定 10 积分/次）
 - [ ] 更多厂商支持（Anthropic、Google 等）
 - [ ] 用户注册功能
 - [ ] 积分充值 / 提现流程
-- [ ] 流式响应支持（SSE）
+- [x] 流式响应支持（SSE）—— 已实现（`POST /api/v1/chat/completions/stream`）
 - [ ] 速率限制优化
 - [ ] 多节点部署支持
 

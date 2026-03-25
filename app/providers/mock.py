@@ -100,9 +100,9 @@ class MockProvider(BaseProvider):
             },
         }
 
-    def chat_completion(self, model: str, messages: list, **kwargs) -> Dict[str, Any]:
+    async def chat_completion(self, model: str, messages: list, **kwargs) -> Dict[str, Any]:
         if self.delay:
-            time.sleep(self.delay)
+            await asyncio.sleep(self.delay)
 
         if self._should_fail():
             raise Exception("Mock provider simulated failure")
@@ -160,7 +160,7 @@ class MockProvider(BaseProvider):
         yield f"data: {json.dumps(end_chunk, ensure_ascii=False)}\n\n"
         yield "data: [DONE]\n\n"
 
-    def embeddings(self, model: str, input: str, **kwargs) -> Dict[str, Any]:
+    async def embeddings(self, model: str, input: str, **kwargs) -> Dict[str, Any]:
         """返回随机向量，维度 1536（兼容 OpenAI text-embedding-ada-002）"""
         vector = [random.uniform(-1, 1) for _ in range(1536)]
         return {
