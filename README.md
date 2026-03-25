@@ -2,11 +2,7 @@
 
 # 🔀 LLM Router
 
-**A lightweight LLM API aggregation & credit billing gateway**
-
 **一个轻量级的 LLM API 聚合计费网关**
-
-Turn your idle API quota into revenue. Let everyone access great models at low cost.
 
 把你手里闲置的 API 额度变成收益，让大家都能低成本用上好模型。
 
@@ -15,33 +11,9 @@ Turn your idle API quota into revenue. Let everyone access great models at low c
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.104+-green.svg)](https://fastapi.tiangolo.com)
 [![React](https://img.shields.io/badge/React-18-61dafb.svg)](https://react.dev)
 
-[English](#-what-is-this) · [中文](#-这是什么)
+[English](./README.en.md) · 中文
 
 </div>
-
----
-
-## 💡 What is this?
-
-Many developers have idle LLM API quotas — subscriptions they bought but barely use, or company allocations left over. At the same time, other developers need to call various models but don't want to integrate with a dozen different vendor APIs.
-
-**LLM Router** bridges these two groups:
-
-- **Key hosters**:托管你的厂商密钥到平台，每次被调用时自动获得积分收益
-- **API callers**: Use a single OpenAI-compatible endpoint, spend credits to call models from multiple vendors
-- **Platform**: Takes a small margin to sustain operations
-
-The system is fully open source. You can self-host it for your team or run it as a public service.
-
-### Two Deployment Modes
-
-| | SQLite Mode | MySQL Mode |
-|--|-------------|------------|
-| **Use case** | Local dev, single-node operation | Production, multi-instance horizontal scaling |
-| **Credit writes** | In-process cache + async delta flush | Direct DB write with row-level locks |
-| **Process state** | Stateful (reloads from DB on restart) | Stateless (any instance can restart freely) |
-| **Dependencies** | Python + SQLite only, zero external deps | Requires MySQL 8.0+ |
-| **Switch cost** | Change `driver` in `config.yaml`, restart | |
 
 ---
 
@@ -62,151 +34,135 @@ The system is fully open source. You can self-host it for your team or run it as
 | | SQLite 单机模式 | MySQL 无状态模式 |
 |--|----------------|----------------|
 | **定位** | 本地开发、单机运营 | 生产环境、多实例水平扩展 |
-| **积分写入** | 进程内缓存 + 后台异步 delta flush | 直接写 DB，行锁保证原子性 |
+| **积分写入** | 进程内缓存 + 后台异步落库 | 直接写 DB，行锁保证原子性 |
 | **进程状态** | 有状态（重启后从 DB 重新加载） | 无状态（任意实例可随时重启/扩容） |
 | **依赖** | 仅 Python + SQLite，零外部依赖 | 需外部 MySQL 8.0+ |
 | **切换成本** | 修改 `config.yaml` 中 `driver`，重启即可 | |
 
 ---
 
-## ✨ Features / 核心特性
+## ✨ 核心特性
 
-- 🔌 **OpenAI-compatible API** — Drop-in replacement: just change `base_url`, no code changes needed  
-  **OpenAI 兼容接口** — 无需改动现有代码，只需替换 `base_url`
-- 🏦 **Two-phase billing** — Pre-deduct → confirm on success, auto-rollback on failure, never over-charge  
-  **双阶段积分计费** — 预扣 + 确认，失败自动回滚，不多扣一分
-- 🔑 **Key pool routing** — Auto-selects available vendor keys, retries on failure, transparent to callers  
-  **密钥池路由** — 自动选择可用密钥，失效自动重试，对调用方透明
-- 🛡️ **SSRF protection** — Vendor URL allowlist, only known legitimate vendor addresses permitted  
-  **SSRF 防护** — 厂商 URL 白名单，只允许访问已知合法地址
-- 📊 **Admin dashboard** — User management, key management, credit adjustment, call logs  
-  **管理后台** — 用户、密钥、积分、日志全套可视化
-- 🌊 **Streaming support** — SSE streaming responses via `/api/v1/chat/completions/stream`  
-  **流式响应** — 支持 SSE 流式输出
+- 🔌 **OpenAI 兼容接口** — 无需改动现有代码，只需替换 `base_url`
+- 🏦 **双阶段积分计费** — 预扣 + 确认，失败自动回滚，不多扣一分
+- 🔑 **密钥池路由** — 自动选择可用密钥，失效自动重试，对调用方透明
+- 🛡️ **SSRF 防护** — 厂商 URL 白名单，只允许访问已知合法地址
+- 📊 **管理后台** — 用户、密钥、积分、日志全套可视化
+- 🌊 **流式响应** — 支持 SSE 流式输出（`/api/v1/chat/completions/stream`）
 
 ---
 
-## 🏗️ Supported Vendors / 支持的厂商
+## 🏗️ 支持的厂商
 
-| Provider | Example Models | Prefix |
-|----------|---------------|--------|
-| ModelScope | moonshotai/Kimi-K2.5, Qwen series | `modelscope/` |
-| Zhipu AI / 智谱 | GLM-4 | `zhipu/` |
+| 厂商 | 模型示例 | 调用前缀 |
+|------|---------|---------|
+| ModelScope | moonshotai/Kimi-K2.5、Qwen 系列 | `modelscope/` |
+| 智谱 AI | GLM-4 | `zhipu/` |
 | MiniMax | abab6.5 | `minimax/` |
-| Alibaba Bailian / 阿里百炼 | qwen-turbo | `alibaba/` |
-| Tencent Hunyuan / 腾讯混元 | hunyuan-pro | `tencent/` |
-| Baidu Qianfan / 百度千帆 | ernie-4.0 | `baidu/` |
+| 阿里云百炼 | qwen-turbo | `alibaba/` |
+| 腾讯混元 | hunyuan-pro | `tencent/` |
+| 百度千帆 | ernie-4.0 | `baidu/` |
 | DeepSeek | deepseek-chat | `deepseek/` |
-| SiliconFlow | Various open-source models | `siliconflow/` |
+| SiliconFlow | 多种开源模型 | `siliconflow/` |
 
-> **Model format / 模型格式**: `provider/actual-model-name`  
-> Example: `model: "modelscope/moonshotai/Kimi-K2.5"` — first segment is the provider, the rest is the real model name.
+> **模型格式**：`provider/真实模型名`，例如 `model: "modelscope/moonshotai/Kimi-K2.5"`，第一段是 provider，后面是真实模型名。
 
 ---
 
-## 🚀 Quick Start / 快速开始
+## 🚀 快速开始
 
-### Requirements / 环境要求
+### 环境要求
 
 - Python 3.11+
 - Node.js 16+
 
-### 1. Clone / 克隆仓库
+### 1. 克隆仓库
 
 ```bash
 git clone https://github.com/wang001/codingPlanShare.git
 cd codingPlanShare
 ```
 
-### 2. Start Backend / 启动后端
+### 2. 启动后端
 
 ```bash
-# Install dependencies
 # 安装依赖（国内用户推荐加镜像源）
 pip install -r requirements.txt
 # pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
-# Initialize database / 初始化数据库
+# 初始化数据库
 python init_db.py
 
-# Start server (default port 3000) / 启动服务
+# 启动服务（默认端口 3000）
 uvicorn app.main:app --host 0.0.0.0 --port 3000
 ```
 
-Visit / 访问 http://localhost:3000/docs for the auto-generated API docs.
+访问 http://localhost:3000/docs 查看自动生成的 API 文档。
 
-### 3. Start Frontend / 启动前端
+### 3. 启动前端
 
 ```bash
 cd frontend
-
-# Install dependencies / 安装依赖
 npm install --include=dev
 # 国内用户：npm install --include=dev --registry https://registry.npmmirror.com
-
-# Dev mode / 开发模式
 npm run dev
 ```
 
-Visit / 访问 http://localhost:5173 for the admin UI.
+访问 http://localhost:5173 打开管理界面。
 
-### 4. Default Credentials / 初始账号
+### 4. 初始账号
 
-| Role / 角色 | Credentials / 账号 |
-|-------------|-------------------|
-| Regular user / 普通用户 | Email: `admin@example.com` · Password: `admin123` |
-| Admin / 管理员 | Password: `admin123`（switch to "Admin Login" tab / 切换到「管理员登录」Tab） |
+| 角色 | 账号 |
+|------|------|
+| 普通用户 | 邮箱 `admin@example.com`，密码 `admin123` |
+| 管理员 | 密码 `admin123`（切换到「管理员登录」Tab） |
 
-> ⚠️ **Change all default passwords and keys in `config.yaml` immediately after first deploy!**  
 > ⚠️ **首次部署后请立即修改 `config.yaml` 中的所有默认密码和密钥！**
 
-### 5. Make Your First Call / 发起第一次调用
+### 5. 发起第一次调用
 
-1. Log in as admin, create a user / 以管理员登录，创建用户
-2. Log in as user, host a vendor API key on the "Keys" page / 以用户登录，在「密钥」页面托管厂商密钥
-3. Create a platform call key / 创建平台调用密钥
-4. Call the API / 调用接口：
+1. 以管理员登录，创建用户
+2. 以用户登录，在「密钥」页面托管你的厂商 API 密钥
+3. 创建一个平台调用密钥
+4. 调用接口：
 
 ```python
 from openai import OpenAI
 
 client = OpenAI(
-    api_key="your-platform-key",   # 你的平台密钥
+    api_key="你的平台密钥",
     base_url="http://localhost:3000/api/v1/chat",
 )
 
 response = client.chat.completions.create(
     model="modelscope/moonshotai/Kimi-K2.5",
-    messages=[{"role": "user", "content": "Hello!"}]
+    messages=[{"role": "user", "content": "你好！"}]
 )
 print(response.choices[0].message.content)
 ```
 
-> The SDK sends `Authorization: Bearer <key>` which the gateway also accepts.  
-> SDK 发送 `Authorization: Bearer <key>`，网关同样支持此格式。
-
 ---
 
-## ⚙️ Configuration / 配置说明
+## ⚙️ 配置说明
 
-Edit `config.yaml` / 编辑 `config.yaml`：
+编辑 `config.yaml`：
 
 ```yaml
-# Admin / 管理员
+# 管理员
 admin:
   password: "your-strong-password"
 
-# Security (must change in production) / 安全（生产环境必须修改）
+# 安全（生产环境必须修改）
 security:
-  encryption_key: "${ENCRYPTION_KEY}"   # Fernet key for vendor key encryption / 厂商密钥加密主密钥
-  jwt_secret: "${JWT_SECRET}"           # JWT signing key / JWT 签名密钥
+  encryption_key: "${ENCRYPTION_KEY}"   # 厂商密钥加密主密钥（Fernet）
+  jwt_secret: "${JWT_SECRET}"           # JWT 签名密钥
 
-# Database / 数据库
+# 数据库 - SQLite 单机
 database:
-  driver: "sqlite"          # "sqlite" for single-node / "mysql" for stateless multi-instance
-  path: "./data/app.db"     # SQLite only / 仅 SQLite 模式使用
+  driver: "sqlite"
+  path: "./data/app.db"
 
-# MySQL (when driver: "mysql")
+# 数据库 - MySQL 无状态（多实例）
 # database:
 #   driver: "mysql"
 #   host: "your-mysql-host"
@@ -218,33 +174,31 @@ database:
 #   max_overflow: 40
 #   pool_recycle: 1800
 
-# Rate limiting / 限流
+# 限流
 rate_limit:
   user_rpm: 60
   default_provider_rpm: 30
 
-# Timeout / 超时
+# 超时（秒）
 timeout:
-  request_timeout: 30       # seconds / 秒
+  request_timeout: 30
 
-# Key management / 密钥管理
+# 密钥管理
 key_management:
-  max_retry: 1              # max retry attempts on vendor failure / 厂商失败最大重试次数
-  cool_down_period: 7200    # cooldown after rate-limit (seconds) / 超限冷却时间（秒）
+  max_retry: 1          # 厂商失败最大重试次数
+  cool_down_period: 7200  # 超限冷却时间（秒）
 ```
 
-Sensitive values (`ENCRYPTION_KEY`, `JWT_SECRET`, `DB_USER`, `DB_PASSWORD`) should be set via environment variables or a `.env` file — never committed to Git.
-
-敏感值（`ENCRYPTION_KEY`、`JWT_SECRET`、`DB_USER`、`DB_PASSWORD`）应通过环境变量或 `.env` 文件注入，不要提交到 Git。
+> 敏感值（`ENCRYPTION_KEY`、`JWT_SECRET`、`DB_USER`、`DB_PASSWORD`）通过环境变量或 `.env` 文件注入，不要提交到 Git。
 
 ---
 
-## 🐳 Docker / Docker 部署
+## 🐳 Docker 部署
 
 ```bash
 docker build -t llm-router .
 
-# SQLite (single node) / SQLite 单机
+# SQLite 单机
 docker run -d \
   -p 3000:3000 \
   -v $(pwd)/data:/app/data \
@@ -253,7 +207,7 @@ docker run -d \
   -e JWT_SECRET=your-secret \
   llm-router
 
-# MySQL (stateless) / MySQL 无状态
+# MySQL 无状态
 docker run -d \
   -p 3000:3000 \
   -v $(pwd)/config.yaml:/app/config.yaml \
@@ -266,107 +220,103 @@ docker run -d \
 
 ---
 
-## 📁 Project Structure / 项目结构
+## 📁 项目结构
 
 ```
 codingPlanShare/
 ├── app/
-│   ├── api/            # HTTP routes (auth/users/keys/points/chat/admin)
-│   ├── services/       # Business logic (auth/points/keys/router/admin)
-│   ├── providers/      # Vendor adapters (unified OpenAI-compatible format)
-│   ├── models/         # ORM models
-│   ├── schemas/        # Request/response schemas
-│   ├── utils/          # Helpers (encryption/cache/background tasks)
-│   └── main.py         # App entrypoint
+│   ├── api/            # HTTP 接口层（auth/users/keys/points/chat/admin）
+│   ├── services/       # 业务逻辑（认证/积分/密钥/路由/管理）
+│   ├── providers/      # 厂商适配器（统一 OpenAI 兼容格式）
+│   ├── models/         # 数据库模型
+│   ├── schemas/        # 请求/响应结构
+│   ├── utils/          # 工具（加密/缓存/后台任务）
+│   └── main.py         # 应用入口
 ├── frontend/
 │   └── src/
-│       ├── api/        # Axios request layer
-│       ├── layouts/    # User / admin layouts
-│       └── pages/      # Page components
-├── tests/              # Unit & regression tests
-├── config.yaml         # Configuration file
-├── init_db.py          # DB initializer
+│       ├── api/        # 接口请求封装
+│       ├── layouts/    # 用户端/管理员端布局
+│       └── pages/      # 页面组件
+├── tests/              # 单元测试 & 回归测试
+├── config.yaml         # 配置文件
+├── init_db.py          # 数据库初始化
 └── requirements.txt
 ```
 
 ---
 
-## 🔌 API Reference / 接口速览
+## 🔌 接口速览
 
-> Full docs at / 完整文档见：`http://localhost:3000/docs`
+> 完整文档：`http://localhost:3000/docs`
 
-### User API / 用户端接口
+### 用户端
 
-| Method | Path | Description / 说明 |
-|--------|------|--------------------|
-| POST | `/api/v1/auth/login` | Login / 用户登录 |
-| GET | `/api/v1/users/me` | Current user info / 当前用户信息 |
-| GET/POST | `/api/v1/keys` | List / create keys / 密钥列表 / 创建 |
-| PUT/DELETE | `/api/v1/keys/{id}` | Update / delete key / 更新 / 删除密钥 |
-| GET | `/api/v1/points` | Credit balance / 积分余额 |
-| GET | `/api/v1/points/logs` | Credit history / 积分明细 |
-| POST | `/api/v1/chat/completions` | Chat completion (needs `api-key` header) / 对话接口 |
-| POST | `/api/v1/chat/completions/stream` | Streaming chat / 流式对话 |
-| POST | `/api/v1/embeddings` | Embeddings / 嵌入接口 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/login` | 用户登录 |
+| GET | `/api/v1/users/me` | 当前用户信息 |
+| GET/POST | `/api/v1/keys` | 密钥列表 / 创建 |
+| PUT/DELETE | `/api/v1/keys/{id}` | 更新 / 删除密钥 |
+| GET | `/api/v1/points` | 积分余额 |
+| GET | `/api/v1/points/logs` | 积分明细 |
+| POST | `/api/v1/chat/completions` | 对话接口（需 `api-key` header） |
+| POST | `/api/v1/chat/completions/stream` | 流式对话 |
+| POST | `/api/v1/embeddings` | 嵌入接口 |
 
-### Admin API / 管理员接口
+### 管理员端
 
-| Method | Path | Description / 说明 |
-|--------|------|--------------------|
-| POST | `/api/v1/auth/admin/login` | Admin login / 管理员登录 |
-| GET/POST | `/api/admin/users` | List / create users / 用户列表 / 创建 |
-| PUT | `/api/admin/users/{id}` | Update user status / 更新用户状态 |
-| POST | `/api/admin/points` | Adjust user credits / 调整用户积分 |
-| GET | `/api/admin/keys` | All keys / 所有密钥 |
-| PUT/DELETE | `/api/admin/keys/{id}` | Manage key status / 管理密钥状态 |
-| GET | `/api/admin/logs` | Call logs / 调用日志 |
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/auth/admin/login` | 管理员登录 |
+| GET/POST | `/api/admin/users` | 用户列表 / 创建 |
+| PUT | `/api/admin/users/{id}` | 更新用户状态 |
+| POST | `/api/admin/points` | 调整用户积分 |
+| GET | `/api/admin/keys` | 所有密钥 |
+| PUT/DELETE | `/api/admin/keys/{id}` | 管理密钥状态 |
+| GET | `/api/admin/logs` | 调用日志 |
 
 ---
 
-## 🛡️ Security / 安全说明
+## 🛡️ 安全说明
 
-- Vendor API keys encrypted at rest via `cryptography` (Fernet) — no plaintext in DB  
-  厂商密钥使用 Fernet 加密落库，明文不入库
-- User passwords hashed with `pbkdf2_sha256`, non-reversible  
-  用户密码 pbkdf2_sha256 哈希，不可逆
-- Vendor URL allowlist prevents SSRF attacks  
-  厂商接口地址白名单，杜绝 SSRF
-- In production: change all defaults and enable HTTPS  
-  生产环境请修改所有默认值并启用 HTTPS
+- 厂商密钥使用 Fernet 加密落库，明文不入库
+- 用户密码 `pbkdf2_sha256` 哈希，不可逆
+- 厂商接口地址白名单，杜绝 SSRF
+- 生产环境请修改所有默认值并启用 HTTPS
 
 ---
 
 ## 🗺️ Roadmap
 
-- [ ] Token-based billing (current: flat 10 credits/call) / 按 token 计费（当前按次）
-- [ ] More vendors: Anthropic, Google, etc. / 更多厂商支持
-- [ ] User self-registration / 用户自助注册
-- [ ] Credit top-up / withdrawal flow / 积分充值 / 提现
-- [x] Streaming SSE responses / 流式响应 ✅
-- [ ] Rate limiting improvements / 限流优化
-- [ ] Multi-node deployment guide / 多节点部署指南
+- [ ] 按 token 计费（当前按次，固定 10 积分/次）
+- [ ] 更多厂商支持（Anthropic、Google 等）
+- [ ] 用户自助注册
+- [ ] 积分充值 / 提现流程
+- [x] 流式响应（SSE）✅
+- [ ] 限流优化
+- [ ] 多节点部署指南
 
 ---
 
-## 🤝 Contributing / 贡献
+## 🤝 贡献
 
-PRs and Issues welcome! / 欢迎提 Issue 和 PR！
+欢迎提 Issue 和 PR！
 
 ```bash
 git checkout -b feature/your-feature
 git commit -m 'feat: add your feature'
 git push origin feature/your-feature
-# Open a Pull Request
+# 提交 Pull Request
 ```
 
 ---
 
 ## 📄 License
 
-MIT — free to use, modify, and distribute. / 自由使用、修改和分发。
+MIT — 自由使用、修改和分发。
 
 ---
 
 <div align="center">
-  <sub>If this project helps you, please give it a ⭐ / 如果对你有帮助，欢迎点一个 ⭐</sub>
+  <sub>如果这个项目对你有帮助，欢迎点一个 ⭐</sub>
 </div>
