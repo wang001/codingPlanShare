@@ -67,6 +67,9 @@ def _write_call_log(db: Session, user_id: int, key_id: int, model: str,
     db.commit()
 
 
+# [Bug2 Fix] 增加 success 参数，由调用方决定本次调用是否算"成功"。
+# 原来内部硬编码 success=True，导致 VendorResponseError 场景下
+# 调用方再写一条 success=False 的 log，产生两条矛盾记录。
 def _confirm_and_log(
     db: Session,
     user_id: int,
@@ -74,12 +77,14 @@ def _confirm_and_log(
     model: str,
     provider: str,
     points: int,
+    success: bool = True,
+    error_msg: Optional[str] = None,
 ):
     """
-    原子化完成成功路径的三步操作：
+    原子化完成成功/失败路径的三步操作：
       1. confirm_deduct（积分落库 / 入队）
       2. update_key_usage（更新密钥使用计数）
-      3. write_call_log（写调用日志）
+      3. write_call_log（写调用日志，success 由调用方传入）
 
     任意一步抛异常时，回滚积分预扣，并将异常向上传播。
     MySQL 模式：confirm_deduct 直接 INSERT，若失败 rollback 有意义。
@@ -88,7 +93,8 @@ def _confirm_and_log(
     try:
         PointsService.confirm_deduct(db, user_id, points, 1, key_id, model, f"Chat with {provider}")
         KeyService.update_key_usage(db, key_id)
-        _write_call_log(db, user_id, key_id, model, success=True)
+        # [Bug2 Fix] success 由调用方传入，不再硬编码 True
+        _write_call_log(db, user_id, key_id, model, success=success, error_msg=error_msg)
     except Exception as e:
         logger.error(f"confirm_and_log 失败，回滚积分: {e}")
         PointsService.rollback_points(db, user_id, points)
@@ -146,32 +152,44 @@ async def chat_completions(
             temperature=route_result['request']['temperature'],
             max_tokens=route_result['request']['max_tokens'],
         )
+        # 正常成功：success=True（默认），无 error_msg
         _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
         return ChatCompletionResponse(**response)
 
     except VendorResponseError as e:
-        # HTTP 200 但响应体解析失败：厂商已消耗算力，照常扣积分，不重试
+        # HTTP 200 但响应体解析失败：厂商已消耗算力，照常扣积分，不重试。
+        # [Bug2 Fix] 传入 success=False、error_msg，由 _confirm_and_log 统一写日志。
+        # 原来在此处额外调用 _write_call_log，产生两条矛盾记录，已删除。
         logger.error(f"VendorResponseError: {e}")
-        _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
-        _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
+        _confirm_and_log(
+            db, user_id, key_id, request.model, provider, points_to_deduct,
+            success=False, error_msg=str(e),
+        )
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
             detail=f"厂商响应解析失败（已扣积分）: {str(e)}",
         )
 
     except Exception as e:
-        # HTTP 层面失败（4xx/5xx）或超时：厂商未消耗算力，回滚积分，尝试重试
+        # HTTP 层面失败（4xx/5xx）或超时：厂商未消耗算力，先回滚，再尝试重试。
+        # [Bug1 Fix] 立即回滚 pre_deduct，重试前重新 pre_deduct，避免多扣。
         _handle_vendor_error(db, e, key_id)
         _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
+        PointsService.rollback_points(db, user_id, points_to_deduct)  # [Bug1 Fix] 先回滚
 
-        # 重试（最多 1 次）
         from app.config.settings import settings
         max_retry = settings.key_management.get('max_retry', 1)
 
         for attempt in range(max_retry):
             logger.warning(f"Retrying chat, attempt {attempt + 1}")
+
+            # [Bug1 Fix] 每次重试前重新 pre_deduct，余额不足则终止重试
+            if not PointsService.pre_deduct_points(db, user_id, points_to_deduct):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="积分余额不足")
+
             route_result = RouterService.route_request(db, request.model, model_dump_result)
             if not route_result:
+                PointsService.rollback_points(db, user_id, points_to_deduct)  # [Bug1 Fix] 路由失败回滚
                 break
 
             provider   = route_result['provider']
@@ -180,6 +198,7 @@ async def chat_completions(
 
             provider_instance = RouterService.create_provider_instance(provider, vendor_key)
             if not provider_instance:
+                PointsService.rollback_points(db, user_id, points_to_deduct)  # [Bug1 Fix] 实例化失败回滚
                 continue
 
             try:
@@ -189,26 +208,32 @@ async def chat_completions(
                     temperature=route_result['request']['temperature'],
                     max_tokens=route_result['request']['max_tokens'],
                 )
+                # 重试成功：此时 pre_deduct 已重新扣过，confirm 正常落库
                 _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
                 return ChatCompletionResponse(**response)
 
             except VendorResponseError as retry_ve:
-                # 重试时同样遇到解析失败，扣积分后返回错误
+                # 重试时遇到解析失败：厂商已消耗算力，扣积分后返回错误。
+                # [Bug2 Fix] 同样用 success=False 传入，不再额外写 _write_call_log。
                 logger.error(f"Retry VendorResponseError: {retry_ve}")
-                _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
-                _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(retry_ve))
+                _confirm_and_log(
+                    db, user_id, key_id, request.model, provider, points_to_deduct,
+                    success=False, error_msg=str(retry_ve),
+                )
                 raise HTTPException(
                     status_code=status.HTTP_502_BAD_GATEWAY,
                     detail=f"厂商响应解析失败（已扣积分）: {str(retry_ve)}",
                 )
 
             except Exception as retry_e:
+                # 重试也失败：回滚本次 pre_deduct，继续下一次
+                # [Bug1 Fix] 每次重试失败都回滚，确保下轮重新 pre_deduct 是干净的
                 _handle_vendor_error(db, retry_e, key_id)
                 _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(retry_e))
+                PointsService.rollback_points(db, user_id, points_to_deduct)  # [Bug1 Fix]
                 continue
 
-        # 所有重试耗尽，回滚积分
-        PointsService.rollback_points(db, user_id, points_to_deduct)
+        # 所有重试耗尽，积分已在最后一次 except 中回滚，直接报错
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"厂商API调用失败: {str(e)}",
@@ -246,7 +271,10 @@ async def chat_completions_stream(
         PointsService.rollback_points(db, user_id, points_to_deduct)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"不支持的厂商: {provider}")
 
-    KeyService.update_key_usage(db, key_id)
+    # [Bug3 Fix] 删除此处提前调用的 KeyService.update_key_usage(db, key_id)。
+    # 原来在 generate() 启动前就调用一次，generate() 内 _confirm_and_log 又调一次，
+    # 导致 used_count 每次流式请求被加两次。
+    # update_key_usage 统一由 generate() 内部的 _confirm_and_log 负责。
 
     async def generate():
         try:
@@ -258,14 +286,17 @@ async def chat_completions_stream(
             ):
                 yield chunk
 
-            # 流式正常结束，扣积分
+            # 流式正常结束：success=True（默认）
             _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
 
         except VendorResponseError as e:
-            # 流式过程中响应体解析失败：厂商已消耗算力，照常扣积分
+            # 流式过程中响应体解析失败：厂商已消耗算力，照常扣积分。
+            # [Bug2 Fix] 传入 success=False，不再额外写 _write_call_log。
             logger.error(f"Stream VendorResponseError: {e}")
-            _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
-            _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
+            _confirm_and_log(
+                db, user_id, key_id, request.model, provider, points_to_deduct,
+                success=False, error_msg=str(e),
+            )
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
             yield "data: [DONE]\n\n"
 
