@@ -8,7 +8,9 @@
   - SQLiteBackend（driver=sqlite）：
       内存余额（_balances）是唯一实时计算来源，启动时懒加载。
       per-user 锁保证同一用户读-改-写原子，不同用户完全并行。
-      积分变动产生 PendingLog 入队，后台任务每秒 flush_to_db() 批量落库。
+      所有积分变动（用户扣减、管理员调整）都只写内存，
+      产生 PendingLog（含 delta 增量）入队，后台任务每秒 flush_to_db() 批量落库。
+      flush 使用 UPDATE balance = balance + delta，天然幂等，避免绝对值覆盖竞争。
       适合单机开发/演示场景。
 
   - MySQLBackend（driver=mysql）：
@@ -44,11 +46,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class PendingLog:
-    """待落库的积分变动记录（SQLite 模式使用）"""
+    """
+    待落库的积分变动记录（SQLite 模式使用）。
+
+    delta：本次变动量（正=增加，负=扣减），flush 时用
+           UPDATE balance = balance + delta 写库，避免绝对值覆盖竞争。
+    log_amount：写入 point_logs.amount 的值（与 delta 相同语义）。
+    """
     user_id: int
-    delta: int
-    balance_after: int
-    log_amount: int
+    delta: int          # 增量，flush 时用 += 写库
+    log_amount: int     # 写入 point_logs.amount
     log_type: int
     related_key_id: Optional[int]
     model: Optional[str]
@@ -191,11 +198,9 @@ class _SQLiteBackend(PointsBackend):
 
     def confirm_deduct(self, db, user_id, amount, log_type,
                        related_key_id=None, model=None, remark=None):
-        self._ensure_loaded(user_id)
-        with self._get_user_lock(user_id):
-            balance_after = self._balances.get(user_id, 0)
+        # 余额已在 pre_deduct 中扣减，这里只需入队落库日志（delta 为负）
         self._enqueue(PendingLog(
-            user_id=user_id, delta=-amount, balance_after=balance_after,
+            user_id=user_id, delta=-amount,
             log_amount=-amount, log_type=log_type,
             related_key_id=related_key_id, model=model, remark=remark,
             created_at=int(time.time()),
@@ -203,12 +208,12 @@ class _SQLiteBackend(PointsBackend):
 
     def add_points(self, db, user_id, amount, log_type,
                    related_key_id=None, model=None, remark=None):
+        # 管理员调分、托管收益等增加积分：写内存 + 入队，统一由 flush 落库
         self._ensure_loaded(user_id)
         with self._get_user_lock(user_id):
-            new_balance = self._balances.get(user_id, 0) + amount
-            self._balances[user_id] = new_balance
+            self._balances[user_id] = self._balances.get(user_id, 0) + amount
         self._enqueue(PendingLog(
-            user_id=user_id, delta=amount, balance_after=new_balance,
+            user_id=user_id, delta=amount,
             log_amount=amount, log_type=log_type,
             related_key_id=related_key_id, model=model, remark=remark,
             created_at=int(time.time()),
@@ -223,15 +228,19 @@ class _SQLiteBackend(PointsBackend):
             .limit(limit).offset(offset).all()
         )
 
-    def invalidate_cache(self, user_id: int):
-        """使指定用户的内存余额失效（管理员直接改 DB 后调用）。"""
-        with self._get_user_lock(user_id):
-            self._balances.pop(user_id, None)
-
     def flush_to_db(self):
         """
         批量将 _pending_logs 落库。
-        策略：drain 队列 → 聚合余额 → UPDATE users + bulk INSERT point_logs。
+
+        [Bug4 Fix] 使用 delta 增量写代替绝对值覆盖：
+          UPDATE users SET balance = balance + :delta WHERE id = :uid
+
+        优势：
+          - 每条记录独立提交增量，天然幂等，顺序无关
+          - 管理员调分、用户扣减都走内存 + 入队，flush 时统一增量更新
+          - 彻底消除「内存绝对值覆盖 DB 中来自其他写入的变化」的竞争窗口
+          - 不再需要 invalidate_cache（已删除）
+
         失败时将本批记录塞回队列头部，等下次重试。
         """
         with self._flush_lock:
@@ -240,16 +249,19 @@ class _SQLiteBackend(PointsBackend):
             batch = self._pending_logs[:]
             self._pending_logs = []
 
-        latest_balance: Dict[int, int] = {}
+        # 聚合同一用户的 delta 总和，一次 UPDATE 写完
+        delta_sum: Dict[int, int] = {}
         for entry in batch:
-            latest_balance[entry.user_id] = entry.balance_after
+            delta_sum[entry.user_id] = delta_sum.get(entry.user_id, 0) + entry.delta
 
         import app.db.database as _db_module
         db = _db_module.SessionLocal()
         try:
-            for user_id, balance in latest_balance.items():
-                db.query(User).filter(User.id == user_id).update(
-                    {"balance": balance}, synchronize_session=False
+            # [Bug4 Fix] 增量更新，不再用 balance_after 绝对值覆盖
+            for user_id, delta in delta_sum.items():
+                db.execute(
+                    text("UPDATE users SET balance = balance + :delta WHERE id = :uid"),
+                    {"delta": delta, "uid": user_id},
                 )
             db.bulk_insert_mappings(PointLog, [
                 {
@@ -262,8 +274,8 @@ class _SQLiteBackend(PointsBackend):
             ])
             db.commit()
             logger.debug(
-                "[SQLiteBackend] flush 成功：%d 条日志，用户 %s",
-                len(batch), list(latest_balance.keys())
+                "[SQLiteBackend] flush 成功：%d 条日志，用户 delta=%s",
+                len(batch), delta_sum
             )
         except Exception as e:
             logger.error("[SQLiteBackend] flush 失败，回退队列: %s", e)
@@ -418,11 +430,9 @@ class PointsService:
                        limit: int = 100, offset: int = 0) -> list:
         return _backend.get_point_logs(db, user_id, limit, offset)
 
-    @staticmethod
-    def invalidate_cache(user_id: int):
-        """仅 SQLiteBackend 有效，MySQLBackend 为空操作。"""
-        if isinstance(_backend, _SQLiteBackend):
-            _backend.invalidate_cache(user_id)
+    # [Bug4 Fix] invalidate_cache 已删除。
+    # SQLite 模式下所有积分写操作（含管理员调分）均通过内存 + flush 完成，
+    # 不存在「直接写 DB 绕过缓存」的场景，无需手动失效缓存。
 
 
 # ─────────────────────────────────────────────
