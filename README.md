@@ -2,9 +2,10 @@
 
 # 🔀 LLM Router
 
-**一个轻量级的 LLM API 聚合计费网关**
+**轻量级 LLM API 聚合网关 · Lightweight LLM API Aggregation & Credit Billing Gateway**
 
-把你手里闲置的 API 额度变成收益，让大家都能低成本用上好模型。
+把闲置的 API 额度变成收益，让所有人都能低成本用上好模型。  
+Turn idle API quota into revenue. One unified OpenAI-compatible endpoint for every LLM vendor.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://python.org)
@@ -14,6 +15,11 @@
 [English](./README.en.md) · 中文
 
 </div>
+
+> **关键词 / Keywords**：LLM 网关 · API 聚合 · 积分计费 · 密钥池路由 · OpenAI 兼容 · 大模型代理  
+> LLM gateway · API aggregation · credit billing · key pool routing · OpenAI compatible · LLM proxy · AI API hub
+
+---
 
 ---
 
@@ -90,8 +96,17 @@ cd codingPlanShare
 pip install -r requirements.txt
 # pip install -r requirements.txt -i https://pypi.tuna.tsinghua.edu.cn/simple/
 
+# 初始化配置文件（首次部署）
+# SQLite 本地开发模式（无需外部数据库）
+python3 scripts/init/init_config.py --sqlite
+# MySQL 生产模式（需提前设置环境变量，见配置说明）
+# python3 scripts/init/init_config.py
+
 # 初始化数据库
-python init_db.py
+# SQLite：
+python3 scripts/init/init_db.py
+# MySQL：先手动创建数据库，再执行建表 SQL：
+# mysql -u <user> -p coding_plan_share < scripts/init/init_mysql.sql
 
 # 启动服务（默认端口 3000）
 uvicorn app.main:app --host 0.0.0.0 --port 3000
@@ -237,9 +252,13 @@ codingPlanShare/
 │       ├── api/        # 接口请求封装
 │       ├── layouts/    # 用户端/管理员端布局
 │       └── pages/      # 页面组件
+├── scripts/
+│   └── init/
+│       ├── init_config.py  # 生成 config.yaml（支持 SQLite/MySQL 模式）
+│       ├── init_db.py      # 初始化 SQLite 数据库 & 默认用户
+│       └── init_mysql.sql  # MySQL 建表脚本（幂等，可重复执行）
 ├── tests/              # 单元测试 & 回归测试
-├── config.yaml         # 配置文件
-├── init_db.py          # 数据库初始化
+├── config.yaml         # 配置文件（由 init_config.py 生成）
 └── requirements.txt
 ```
 

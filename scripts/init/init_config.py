@@ -25,7 +25,9 @@ import argparse
 import os
 import sys
 
-CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.yaml")
+# 项目根目录（scripts/init/ 上两级）
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+CONFIG_PATH = os.path.join(ROOT_DIR, "config.yaml")
 
 # ── 配置模板 ──────────────────────────────────────────────────────────────
 
@@ -187,13 +189,13 @@ def main():
         print()
         print("后续步骤：")
         print("  1. 确保 MySQL 数据库 'coding_plan_share' 已创建")
-        print("  2. 执行建表 SQL：mysql -u <user> -p coding_plan_share < init_mysql.sql")
+        print("  2. 执行建表 SQL：mysql -u <user> -p coding_plan_share < scripts/init/init_mysql.sql")
         print("  3. 设置好所有必要的环境变量（或 .env 文件）")
         print("  4. 启动服务：uvicorn app.main:app --reload")
     else:
         print()
         print("后续步骤：")
-        print("  1. 执行 SQLite 初始化：python3 init_db.py")
+        print("  1. 执行 SQLite 初始化：python3 scripts/init/init_db.py")
         print("  2. 启动服务：uvicorn app.main:app --reload")
 
 
