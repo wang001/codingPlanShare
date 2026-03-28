@@ -143,10 +143,11 @@ class RouterService:
             provider_request = RouterService.adapt_request(provider, actual_model, request_data, decrypted_key)
 
             return {
-                'provider': provider,
-                'key_id': provider_key.id,
-                'key': decrypted_key,
-                'request': provider_request
+                'provider':      provider,
+                'key_id':        provider_key.id,
+                'key_owner_id':  provider_key.user_id,  # 托管该厂商密钥的用户 id，用于发放收益
+                'key':           decrypted_key,
+                'request':       provider_request,
             }
 
         return None
