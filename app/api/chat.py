@@ -53,8 +53,18 @@ def _handle_vendor_error(db: Session, exc: Exception, key_id: int):
             KeyService.mark_key_invalid(db, key_id)
 
 
-def _write_call_log(db: Session, user_id: int, key_id: int, model: str,
-                    success: bool, error_msg: str = None):
+def _write_call_log(
+    db: Session,
+    user_id: int,
+    key_id: int,
+    model: str,
+    success: bool,
+    error_msg: str = None,
+    prompt_tokens: int = None,
+    completion_tokens: int = None,
+    total_tokens: int = None,
+    points_deducted: int = None,
+):
     log = CallLog(
         user_id=user_id,
         provider_key_id=key_id,
@@ -62,6 +72,10 @@ def _write_call_log(db: Session, user_id: int, key_id: int, model: str,
         status=1 if success else 0,
         error_msg=error_msg,
         ip="127.0.0.1",
+        prompt_tokens=prompt_tokens,
+        completion_tokens=completion_tokens,
+        total_tokens=total_tokens,
+        points_deducted=points_deducted,
     )
     db.add(log)
     db.commit()
@@ -80,29 +94,37 @@ def _confirm_and_log(
     points: int,
     success: bool = True,
     error_msg: Optional[str] = None,
+    usage: Optional[dict] = None,
 ):
     """
     原子化完成成功/失败路径的四步操作：
       1. confirm_deduct（调用者积分落库 / 入队）
       2. update_key_usage（更新密钥使用计数）
-      3. write_call_log（写调用日志，success 由调用方传入）
+      3. write_call_log（写调用日志，success/token 用量由调用方传入）
       4. 发放托管收益（仅 success=True 且非自托管时触发）
 
-    任意一步抛异常时，回滚积分预扣，并将异常向上传播。
-    MySQL 模式：confirm_deduct 直接 INSERT，若失败 rollback 有意义。
-    SQLite 模式：confirm_deduct 写队列（内存操作不会失败），基本不触发 except。
+    usage 参数：成功时传入厂商响应的 usage 字段，用于记录真实 token 用量。
+      格式：{"prompt_tokens": int, "completion_tokens": int, "total_tokens": int}
+      失败时传 None，call_log 对应字段留空。
 
     托管收益规则：
       - 仅调用成功时发放（success=True）
       - 调用者与托管者相同时不发放（自托管，避免自买自卖）
       - 收益额 = floor(points * key_reward_rate)，至少 1 积分（rate > 0 时）
-      - 由 config.yaml key_reward.enabled / key_reward_rate 控制
     """
     try:
         PointsService.confirm_deduct(db, user_id, points, 1, key_id, model, f"Chat with {provider}")
         KeyService.update_key_usage(db, key_id)
         # [Bug2 Fix] success 由调用方传入，不再硬编码 True
-        _write_call_log(db, user_id, key_id, model, success=success, error_msg=error_msg)
+        _write_call_log(
+            db, user_id, key_id, model,
+            success=success,
+            error_msg=error_msg,
+            prompt_tokens=usage.get('prompt_tokens') if usage else None,
+            completion_tokens=usage.get('completion_tokens') if usage else None,
+            total_tokens=usage.get('total_tokens') if usage else None,
+            points_deducted=points,
+        )
     except Exception as e:
         logger.error(f"confirm_and_log 失败，回滚积分: {e}")
         PointsService.rollback_points(db, user_id, points)
@@ -187,7 +209,7 @@ async def chat_completions(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的API密钥")
 
     user_id = key.user_id
-    points_to_deduct = 10
+    points_to_deduct = RouterService.get_model_price(request.model)
 
     if not PointsService.pre_deduct_points(db, user_id, points_to_deduct):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="积分余额不足")
@@ -217,8 +239,11 @@ async def chat_completions(
             temperature=route_result['request']['temperature'],
             max_tokens=route_result['request']['max_tokens'],
         )
-        # 正常成功：success=True（默认），触发托管收益发放
-        _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
+        # 正常成功：触发托管收益发放，记录真实 token 用量
+        _confirm_and_log(
+            db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct,
+            usage=response.get('usage'),
+        )
         return ChatCompletionResponse(**response)
 
     except VendorResponseError as e:
@@ -274,7 +299,10 @@ async def chat_completions(
                     max_tokens=route_result['request']['max_tokens'],
                 )
                 # 重试成功：此时 pre_deduct 已重新扣过，confirm 正常落库，触发收益
-                _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
+                _confirm_and_log(
+                    db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct,
+                    usage=response.get('usage'),
+                )
                 return ChatCompletionResponse(**response)
 
             except VendorResponseError as retry_ve:
@@ -317,7 +345,7 @@ async def chat_completions_stream(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="无效的API密钥")
 
     user_id = key.user_id
-    points_to_deduct = 10
+    points_to_deduct = RouterService.get_model_price(request.model)
 
     if not PointsService.pre_deduct_points(db, user_id, points_to_deduct):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="积分余额不足")
@@ -352,7 +380,8 @@ async def chat_completions_stream(
             ):
                 yield chunk
 
-            # 流式正常结束：success=True（默认），触发托管收益发放
+            # 流式正常结束：触发托管收益发放
+            # 注：流式响应无法从 SSE chunks 中结构化提取 usage，暂记 None
             _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
 
         except VendorResponseError as e:
