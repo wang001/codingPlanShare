@@ -74,6 +74,7 @@ def _confirm_and_log(
     db: Session,
     user_id: int,
     key_id: int,
+    key_owner_id: int,
     model: str,
     provider: str,
     points: int,
@@ -81,14 +82,21 @@ def _confirm_and_log(
     error_msg: Optional[str] = None,
 ):
     """
-    原子化完成成功/失败路径的三步操作：
-      1. confirm_deduct（积分落库 / 入队）
+    原子化完成成功/失败路径的四步操作：
+      1. confirm_deduct（调用者积分落库 / 入队）
       2. update_key_usage（更新密钥使用计数）
       3. write_call_log（写调用日志，success 由调用方传入）
+      4. 发放托管收益（仅 success=True 且非自托管时触发）
 
     任意一步抛异常时，回滚积分预扣，并将异常向上传播。
     MySQL 模式：confirm_deduct 直接 INSERT，若失败 rollback 有意义。
     SQLite 模式：confirm_deduct 写队列（内存操作不会失败），基本不触发 except。
+
+    托管收益规则：
+      - 仅调用成功时发放（success=True）
+      - 调用者与托管者相同时不发放（自托管，避免自买自卖）
+      - 收益额 = floor(points * key_reward_rate)，至少 1 积分（rate > 0 时）
+      - 由 config.yaml key_reward.enabled / key_reward_rate 控制
     """
     try:
         PointsService.confirm_deduct(db, user_id, points, 1, key_id, model, f"Chat with {provider}")
@@ -99,6 +107,62 @@ def _confirm_and_log(
         logger.error(f"confirm_and_log 失败，回滚积分: {e}")
         PointsService.rollback_points(db, user_id, points)
         raise
+
+    # ── 托管收益发放 ─────────────────────────────────────────────────
+    # 在扣费落库之后单独执行，失败不影响主流程（只记日志）
+    if success:
+        _grant_key_owner_reward(db, user_id, key_owner_id, key_id, model, points)
+
+
+def _grant_key_owner_reward(
+    db: Session,
+    caller_user_id: int,
+    key_owner_id: int,
+    key_id: int,
+    model: str,
+    points_deducted: int,
+):
+    """
+    向托管密钥的用户发放收益积分。
+
+    触发条件：
+      1. config.yaml key_reward.enabled = true
+      2. 调用者（caller_user_id）≠ 托管者（key_owner_id）：自托管不发收益
+      3. 计算出的收益 reward ≥ 1
+
+    收益计算：reward = floor(points_deducted * key_reward_rate)
+    写入 point_logs.type = 2（托管收益），remark 注明来源模型和调用者 id。
+    任何异常均只记 error log，不抛出，不影响调用方的响应。
+    """
+    try:
+        from app.config.settings import settings
+        reward_cfg = settings.key_reward
+        if not reward_cfg.get('enabled', False):
+            return
+        if caller_user_id == key_owner_id:
+            # 自托管：调用者即密钥所有人，无需发收益
+            return
+
+        rate = float(reward_cfg.get('key_reward_rate', 0.7))
+        reward = int(points_deducted * rate)
+        if reward < 1:
+            return
+
+        PointsService.add_points(
+            db,
+            user_id=key_owner_id,
+            amount=reward,
+            log_type=2,
+            related_key_id=key_id,
+            model=model,
+            remark=f"托管收益：model={model}，调用者uid={caller_user_id}，扣{points_deducted}积分→收益{reward}积分",
+        )
+        logger.info(
+            f"[Reward] key_owner={key_owner_id} +{reward}积分 "
+            f"(caller={caller_user_id}, key_id={key_id}, model={model})"
+        )
+    except Exception as e:
+        logger.error(f"[Reward] 发放托管收益失败，不影响主流程: {e}")
 
 
 @router.post(
@@ -134,11 +198,12 @@ async def chat_completions(
         PointsService.rollback_points(db, user_id, points_to_deduct)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="没有可用的厂商密钥")
 
-    provider   = route_result['provider']
-    key_id     = route_result['key_id']
-    vendor_key = route_result['key']
+    provider      = route_result['provider']
+    key_id        = route_result['key_id']
+    key_owner_id  = route_result['key_owner_id']
+    vendor_key    = route_result['key']
 
-    logger.info(f"Routing to provider={provider} key_id={key_id} model={request.model}")
+    logger.info(f"Routing to provider={provider} key_id={key_id} key_owner={key_owner_id} model={request.model}")
 
     provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
@@ -152,17 +217,16 @@ async def chat_completions(
             temperature=route_result['request']['temperature'],
             max_tokens=route_result['request']['max_tokens'],
         )
-        # 正常成功：success=True（默认），无 error_msg
-        _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
+        # 正常成功：success=True（默认），触发托管收益发放
+        _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
         return ChatCompletionResponse(**response)
 
     except VendorResponseError as e:
-        # HTTP 200 但响应体解析失败：厂商已消耗算力，照常扣积分，不重试。
+        # HTTP 200 但响应体解析失败：厂商已消耗算力，照常扣积分，不重试，不发收益。
         # [Bug2 Fix] 传入 success=False、error_msg，由 _confirm_and_log 统一写日志。
-        # 原来在此处额外调用 _write_call_log，产生两条矛盾记录，已删除。
         logger.error(f"VendorResponseError: {e}")
         _confirm_and_log(
-            db, user_id, key_id, request.model, provider, points_to_deduct,
+            db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct,
             success=False, error_msg=str(e),
         )
         raise HTTPException(
@@ -192,9 +256,10 @@ async def chat_completions(
                 PointsService.rollback_points(db, user_id, points_to_deduct)  # [Bug1 Fix] 路由失败回滚
                 break
 
-            provider   = route_result['provider']
-            key_id     = route_result['key_id']
-            vendor_key = route_result['key']
+            provider      = route_result['provider']
+            key_id        = route_result['key_id']
+            key_owner_id  = route_result['key_owner_id']
+            vendor_key    = route_result['key']
 
             provider_instance = RouterService.create_provider_instance(provider, vendor_key)
             if not provider_instance:
@@ -208,16 +273,16 @@ async def chat_completions(
                     temperature=route_result['request']['temperature'],
                     max_tokens=route_result['request']['max_tokens'],
                 )
-                # 重试成功：此时 pre_deduct 已重新扣过，confirm 正常落库
-                _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
+                # 重试成功：此时 pre_deduct 已重新扣过，confirm 正常落库，触发收益
+                _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
                 return ChatCompletionResponse(**response)
 
             except VendorResponseError as retry_ve:
-                # 重试时遇到解析失败：厂商已消耗算力，扣积分后返回错误。
+                # 重试时遇到解析失败：厂商已消耗算力，扣积分后返回错误，不发收益。
                 # [Bug2 Fix] 同样用 success=False 传入，不再额外写 _write_call_log。
                 logger.error(f"Retry VendorResponseError: {retry_ve}")
                 _confirm_and_log(
-                    db, user_id, key_id, request.model, provider, points_to_deduct,
+                    db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct,
                     success=False, error_msg=str(retry_ve),
                 )
                 raise HTTPException(
@@ -262,9 +327,10 @@ async def chat_completions_stream(
         PointsService.rollback_points(db, user_id, points_to_deduct)
         raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="没有可用的厂商密钥")
 
-    provider   = route_result['provider']
-    key_id     = route_result['key_id']
-    vendor_key = route_result['key']
+    provider      = route_result['provider']
+    key_id        = route_result['key_id']
+    key_owner_id  = route_result['key_owner_id']
+    vendor_key    = route_result['key']
 
     provider_instance = RouterService.create_provider_instance(provider, vendor_key)
     if not provider_instance:
@@ -286,22 +352,22 @@ async def chat_completions_stream(
             ):
                 yield chunk
 
-            # 流式正常结束：success=True（默认）
-            _confirm_and_log(db, user_id, key_id, request.model, provider, points_to_deduct)
+            # 流式正常结束：success=True（默认），触发托管收益发放
+            _confirm_and_log(db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct)
 
         except VendorResponseError as e:
-            # 流式过程中响应体解析失败：厂商已消耗算力，照常扣积分。
+            # 流式过程中响应体解析失败：厂商已消耗算力，照常扣积分，不发收益。
             # [Bug2 Fix] 传入 success=False，不再额外写 _write_call_log。
             logger.error(f"Stream VendorResponseError: {e}")
             _confirm_and_log(
-                db, user_id, key_id, request.model, provider, points_to_deduct,
+                db, user_id, key_id, key_owner_id, request.model, provider, points_to_deduct,
                 success=False, error_msg=str(e),
             )
             yield f"data: {{\"error\": \"{str(e)}\"}}\n\n"
             yield "data: [DONE]\n\n"
 
         except Exception as e:
-            # HTTP 失败或超时：回滚积分
+            # HTTP 失败或超时：回滚积分，不发收益
             _handle_vendor_error(db, e, key_id)
             _write_call_log(db, user_id, key_id, request.model, success=False, error_msg=str(e))
             PointsService.rollback_points(db, user_id, points_to_deduct)
