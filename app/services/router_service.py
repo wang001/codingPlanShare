@@ -199,6 +199,35 @@ class RouterService:
         return response
 
     @staticmethod
+    def get_model_price(model: str) -> int:
+        """
+        查询本次调用应扣的积分数。
+
+        查找顺序（优先级从高到低）：
+          1. config.yaml model_pricing.models.<provider/model>  — 精确模型匹配
+          2. config.yaml model_pricing.providers.<provider>     — provider 级别兜底
+          3. config.yaml model_pricing.default                  — 全局兜底（默认 10）
+
+        参数 model 为调用方传入的完整模型字符串，如 "zhipu_coding/glm-5.1"。
+        """
+        pricing = settings.model_pricing
+        default_price = int(pricing.get('default', 10))
+
+        # 1. 精确模型匹配
+        models_map: Dict[str, Any] = pricing.get('models', {})
+        if model in models_map:
+            return int(models_map[model])
+
+        # 2. provider 级别
+        provider, _ = RouterService.get_provider_from_model(model)
+        providers_map: Dict[str, Any] = pricing.get('providers', {})
+        if provider in providers_map:
+            return int(providers_map[provider])
+
+        # 3. 全局兜底
+        return default_price
+
+    @staticmethod
     def list_providers() -> List[Dict[str, Any]]:
         """返回所有已注册 provider 的元信息列表，供管理后台展示。"""
         result = []
@@ -210,6 +239,7 @@ class RouterService:
                 "base_url": base_url,
                 "coding_plan": meta.get("coding_plan", False),
                 "key_hint": meta.get("key_hint", ""),
+                "price": RouterService.get_model_price(provider + "/"),
             })
         return result
 
