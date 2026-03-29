@@ -60,14 +60,16 @@ class Settings:
         # 展开所有 ${ENV_VAR} 占位符
         self.config = _expand_env(raw)
 
-        self.admin        = self.config.get('admin', {})
-        self.database     = self.config.get('database', {})
-        self.rate_limit   = self.config.get('rate_limit', {})
-        self.security     = self.config.get('security', {})
-        self.timeout      = self.config.get('timeout', {})
+        self.admin          = self.config.get('admin', {})
+        self.database       = self.config.get('database', {})
+        self.rate_limit     = self.config.get('rate_limit', {})
+        self.security       = self.config.get('security', {})
+        self.timeout        = self.config.get('timeout', {})
         self.key_management = self.config.get('key_management', {})
-        self.cache        = self.config.get('cache', {})
-        self.logging      = self.config.get('logging', {})
+        self.cache          = self.config.get('cache', {})
+        self.logging        = self.config.get('logging', {})
+        self.key_reward     = self.config.get('key_reward', {})
+        self.model_pricing  = self.config.get('model_pricing', {})
 
 
 settings = Settings()

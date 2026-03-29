@@ -34,6 +34,50 @@ key_management:
   cool_down_period: 7200 # 密钥超限时的冷却时间，单位：秒，暂时没有实现
   max_concurrency: 1 # 每个密钥的最大并发数，暂时没有实现
 
+# 模型差异计费配置
+# 查找顺序（优先级从高到低）：
+#   1. models.<provider/model>  精确模型匹配
+#   2. providers.<provider>     provider 级别兜底
+#   3. default                  全局兜底
+# 单位：积分/次（整数）
+model_pricing:
+  default: 10                        # 全局兜底
+  providers:
+    modelscope:    10
+    zhipu:         10
+    zhipu_coding:  8                 # coding plan 套餐均摊，略低
+    minimax:       12
+    minimax_coding: 8
+    alibaba:       10
+    alibaba_coding: 8
+    tencent:       10
+    baidu:         8
+    kimi:          20                # kimi-k2.5 成本较高
+    deepseek:      8
+    siliconflow:   6
+    mock:          10
+  models:
+    "zhipu/glm-4.5-air":            3
+    "zhipu/glm-4.7":                10
+    "zhipu_coding/glm-4.5-air":     3
+    "zhipu_coding/glm-4.7":         8
+    "zhipu_coding/glm-5.1":        15   # 高阶模型，高峰 3x 抵扣对应
+    "minimax_coding/MiniMax-M2.7":  8
+    "alibaba_coding/qwen3.5-plus":  8
+    "kimi/kimi-k2.5":              20
+    "deepseek/deepseek-reasoner":  15
+    "mock/test-model":             10
+
+# 托管密钥收益配置
+# 用户 A 托管厂商密钥，用户 B 调用时触发：A 获得收益，平台抽取差价
+# key_reward_rate: 托管者获得调用积分的比例（0.0~1.0）
+#   例：用户 B 扣 10 积分，rate=0.7 → 托管者 A 得 7 积分，平台留 3 积分
+# 仅在调用成功（success=True）时发放，失败不发收益
+# 自托管（调用者 == 托管者）时不发收益，避免自买自卖
+key_reward:
+  enabled: true
+  key_reward_rate: 0.7  # 托管者分成比例，70% 归托管者，30% 平台留存
+
 
 
 # 日志配置

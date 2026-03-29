@@ -8,6 +8,7 @@ from app.schemas.user import UserCreate, UserResponse
 from app.schemas.point import PointAdjustRequest
 from app.schemas.key import ApiKeyResponse
 from app.services.admin_service import AdminService
+from app.services.router_service import RouterService
 from app.config.settings import settings
 
 router = APIRouter()
@@ -108,6 +109,19 @@ def update_key_status(
 def delete_key(key_id: int, current_admin: bool = Depends(get_current_admin), db: Session = Depends(get_db)):
     AdminService.update_api_key_status(db, key_id, 1)
     return {"message": "密钥已删除"}
+
+
+@router.get(
+    "/providers",
+    summary="已支持的厂商列表",
+    description=(
+        "返回系统白名单中所有已注册的厂商 provider 信息，供前端创建密钥时选择。\n\n"
+        "**coding_plan=true** 表示该 provider 走套餐计费专属通道，"
+        "需要使用对应厂商的 Coding Plan 专属 API Key，不能与按量付费 key 混用。"
+    ),
+)
+def list_providers(current_admin: bool = Depends(get_current_admin)):
+    return RouterService.list_providers()
 
 
 @router.get(

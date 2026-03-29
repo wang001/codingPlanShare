@@ -81,14 +81,15 @@ def make_vendor_key(db: Session, user_id: int) -> ApiKey:
 
 
 MOCK_ROUTE_RESULT = {
-    "provider": "mock",
-    "key_id": 999,
-    "key": "mock",
+    "provider":     "mock",
+    "key_id":       999,
+    "key_owner_id": 999,   # 与调用者不同的虚构 id，避免自托管判断干扰
+    "key":          "mock",
     "request": {
-        "model": "test",
-        "messages": [{"role": "user", "content": "hi"}],
+        "model":       "test",
+        "messages":    [{"role": "user", "content": "hi"}],
         "temperature": 0.7,
-        "max_tokens": 100,
+        "max_tokens":  100,
     },
 }
 
