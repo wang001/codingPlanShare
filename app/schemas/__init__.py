@@ -2,7 +2,7 @@ from app.schemas.auth import LoginRequest, LoginResponse
 from app.schemas.user import UserCreate, UserUpdate, UserResponse
 from app.schemas.key import ApiKeyCreate, ApiKeyUpdate, ApiKeyResponse
 from app.schemas.point import PointLogResponse, PointAdjustRequest
-from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse
+from app.schemas.chat import ChatCompletionRequest, ChatCompletionResponse, ResponsesRequest
 from app.schemas.admin import AdminLoginRequest, AdminLoginResponse
 
 __all__ = [
@@ -10,6 +10,6 @@ __all__ = [
     'UserCreate', 'UserUpdate', 'UserResponse',
     'ApiKeyCreate', 'ApiKeyUpdate', 'ApiKeyResponse',
     'PointLogResponse', 'PointAdjustRequest',
-    'ChatCompletionRequest', 'ChatCompletionResponse',
+    'ChatCompletionRequest', 'ChatCompletionResponse', 'ResponsesRequest',
     'AdminLoginRequest', 'AdminLoginResponse'
 ]

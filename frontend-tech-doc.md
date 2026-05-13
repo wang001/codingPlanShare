@@ -7,7 +7,7 @@
 | 类别 | 技术 | 版本 | 说明 |
 |------|------|------|------|
 | 框架 | React | 18.2.0 | 函数组件 + Hooks |
-| 构建工具 | Vite | 5.0.8 | 开发服务器 + 构建，配置 `/api` 和 `/admin` 代理 |
+| 构建工具 | Vite | 5.4.x | 开发服务器 + 构建，配置 `/api` 和 `/admin` 代理 |
 | UI 组件库 | Ant Design | 5.x | 响应式布局，PC 和移动端均可使用 |
 | 路由 | React Router | 6.x | 声明式路由，支持嵌套路由和权限守卫 |
 | HTTP 客户端 | Axios | 1.6.x | 统一请求拦截器，自动注入 token，401 跳转登录 |
@@ -118,6 +118,7 @@ frontend/
 | `GET /api/v1/points` | 获取积分余额 |
 | `GET /api/v1/points/logs` | 获取积分明细（分页） |
 | `GET /api/v1/keys` | 获取密钥列表 |
+| `GET /api/v1/keys/providers` | 获取后端 provider 白名单，用于托管厂商密钥下拉选项 |
 | `POST /api/v1/keys` | 创建密钥 |
 | `PUT /api/v1/keys/{id}` | 更新密钥 |
 | `DELETE /api/v1/keys/{id}` | 删除密钥 |
@@ -175,6 +176,12 @@ frontend/
 | 2 | 托管收益 |
 | 3 | 管理员调整 |
 | 4 | 平台收入 |
+
+### 厂商列表
+
+密钥页不再维护前端写死的 provider 枚举。进入页面时会调用 `GET /api/v1/keys/providers`，用后端返回的 `label/provider/coding_plan/key_hint/supports_responses/price` 构建「托管厂商密钥」下拉选项。
+
+`src/utils/index.ts` 中的 `getProviderLabel` 只作为历史数据或接口异常时的展示兜底；真实可选范围以后端白名单为准。
 
 ---
 

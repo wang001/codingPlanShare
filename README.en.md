@@ -61,6 +61,11 @@ The system is fully open source. You can self-host it for your team or run it as
 | Provider | Example Models | Prefix |
 |----------|---------------|--------|
 | ModelScope | moonshotai/Kimi-K2.5, Qwen series | `modelscope/` |
+| OpenAI | gpt-4.1, gpt-4o | `openai/` |
+| OpenRouter | anthropic/claude, openai/gpt, etc. | `openrouter/` |
+| Hugging Face | Hosted models | `huggingface/` |
+| Anthropic | Claude Sonnet series | `anthropic/` |
+| Google Gemini | Gemini series | `gemini/` |
 | Zhipu AI | GLM-4 | `zhipu/` |
 | MiniMax | abab6.5 | `minimax/` |
 | Alibaba Bailian | qwen-turbo | `alibaba/` |
@@ -68,9 +73,12 @@ The system is fully open source. You can self-host it for your team or run it as
 | Baidu Qianfan | ernie-4.0 | `baidu/` |
 | DeepSeek | deepseek-chat | `deepseek/` |
 | SiliconFlow | Various open-source models | `siliconflow/` |
+| Other OpenAI-compatible gateways | Mistral, Groq, VolcEngine, BytePlus, StepFun, etc. | See `/api/v1/keys/providers` |
 
 > **Model format**: `provider/actual-model-name`  
 > Example: `model: "modelscope/moonshotai/Kimi-K2.5"` — first segment is the provider, the rest is the real model name.
+>
+> **Responses API**: OpenAI Responses API is exposed via `POST /api/v1/responses`, using the same model format, for example `openai/gpt-4.1`.
 
 ---
 
@@ -155,6 +163,23 @@ print(response.choices[0].message.content)
 
 > The SDK sends `Authorization: Bearer <key>`, which the gateway also accepts.
 
+Responses API uses a separate endpoint:
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="your-platform-key",
+    base_url="http://localhost:3000/api/v1",
+)
+
+response = client.responses.create(
+    model="openai/gpt-4.1",
+    input="Hello!"
+)
+print(response.output_text)
+```
+
 ---
 
 ## ⚙️ Configuration
@@ -201,7 +226,25 @@ timeout:
 key_management:
   max_retry: 1            # Max retry attempts on vendor failure
   cool_down_period: 7200  # Cooldown after rate-limit hit (seconds)
+
+# Provider allowlist extension: built-in providers work out of the box.
+# Use this section only to override, add, or disable providers.
+provider_catalog:
+  providers:
+    my_gateway:
+      enabled: true
+      base_url: "https://api.example.com/v1"
+      label: "My Gateway"
+      protocol: "openai"          # openai / anthropic
+      coding_plan: false
+      key_hint: "sk-xxxxx"
+      supports_responses: false
+    # Disable a built-in provider:
+    # groq:
+    #   enabled: false
 ```
+
+Custom `base_url` values are validated for SSRF protection: they must use `https://` and cannot point to `localhost`, private IPs, link-local addresses, metadata endpoints, or other non-public targets.
 
 > Sensitive values (`ENCRYPTION_KEY`, `JWT_SECRET`, `DB_USER`, `DB_PASSWORD`) should be set via environment variables or a `.env` file — never committed to Git.
 
@@ -304,10 +347,27 @@ codingPlanShare/
 
 ---
 
+## ✅ Testing
+
+```bash
+# Full backend test suite; offline, no real vendor API key required
+python -m pytest -q
+
+# Provider catalog / OpenAI-compatible provider / Responses API regression tests
+python -m pytest tests/test_provider.py tests/test_provider_catalog.py -q
+
+# Frontend build
+cd frontend && npm install && npm run build
+```
+
+---
+
 ## 🗺️ Roadmap
 
 - [ ] Token-based billing (current: flat 10 credits/call)
-- [ ] More vendors: Anthropic, Google, etc.
+- [x] More remote vendors: OpenAI, OpenRouter, Anthropic, Gemini, Mistral, Groq, etc.
+- [x] OpenAI Responses API (non-streaming)
+- [ ] Streaming Responses API
 - [ ] User self-registration
 - [ ] Credit top-up / withdrawal flow
 - [x] Streaming SSE responses ✅

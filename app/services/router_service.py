@@ -1,15 +1,23 @@
+import ipaddress
+import logging
+import re
 from typing import Optional, Dict, Any, List
+from urllib.parse import urlparse
+
 from sqlalchemy.orm import Session
 from app.models.api_key import ApiKey
 from app.services.key_service import KeyService
 from app.utils.cache import cache
 from app.config.settings import settings
 
+logger = logging.getLogger(__name__)
+
 # ============================================================
 # 厂商白名单：provider 名称 → base_url
 #
-# 安全策略：只允许访问此处登记的已知厂商地址，防止 SSRF。
-# 新增厂商时在此处添加，未登记的 provider 创建密钥时会被拒绝。
+# 安全策略：默认使用代码内置白名单；也允许通过 config.yaml 的
+# provider_catalog.providers 做受限扩展/覆盖。配置 URL 必须是 https
+# 且不能指向 localhost、内网 IP、link-local、metadata 等地址。
 #
 # 命名规则：
 #   - 纯按量付费通道：直接用厂商名，如 "zhipu"、"kimi"
@@ -20,17 +28,37 @@ from app.config.settings import settings
 # 为什么不用同一个 provider 名 + 不同 base_url？
 #   → 见文件底部「设计说明」注释。
 # ============================================================
-PROVIDER_BASE_URLS: Dict[str, str] = {
+BUILTIN_PROVIDER_BASE_URLS: Dict[str, str] = {
     # ── 按量付费通道（标准 OpenAI 兼容） ────────────────────────────────
     "modelscope":    "https://api-inference.modelscope.cn/v1",
+    "openai":        "https://api.openai.com/v1",
+    "openrouter":    "https://openrouter.ai/api/v1",
+    "huggingface":   "https://router.huggingface.co/v1",
+    "aihubmix":      "https://aihubmix.com/v1",
     "zhipu":         "https://open.bigmodel.cn/api/paas/v4",
     "minimax":       "https://api.minimaxi.com/v1",          # 国内站
+    "minimax_global":"https://api.minimax.io/v1",            # 国际站
     "alibaba":       "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "dashscope":     "https://dashscope.aliyuncs.com/compatible-mode/v1",
     "tencent":       "https://api.hunyuan.cloud.tencent.com/v1",
     "baidu":         "https://qianfan.baidubce.com/v2",
+    "qianfan":       "https://qianfan.baidubce.com/v2",
     "deepseek":      "https://api.deepseek.com/v1",
     "siliconflow":   "https://api.siliconflow.cn/v1",
     "kimi":          "https://api.moonshot.cn/v1",           # Kimi 仅按量，无独立 coding plan
+    "moonshot":      "https://api.moonshot.ai/v1",
+    "gemini":        "https://generativelanguage.googleapis.com/v1beta/openai",
+    "mistral":       "https://api.mistral.ai/v1",
+    "volcengine":    "https://ark.cn-beijing.volces.com/api/v3",
+    "byteplus":      "https://ark.ap-southeast.bytepluses.com/api/v3",
+    "stepfun":       "https://api.stepfun.com/v1",
+    "xiaomi_mimo":   "https://api.xiaomimimo.com/v1",
+    "longcat":       "https://api.longcat.chat/openai/v1",
+    "groq":          "https://api.groq.com/openai/v1",
+
+    # ── Anthropic 协议通道 ─────────────────────────────────────────────
+    "anthropic":          "https://api.anthropic.com/v1",
+    "minimax_anthropic":  "https://api.minimax.io/anthropic",
 
     # ── Coding Plan 专属通道 ─────────────────────────────────────────
     # 各家 Coding Plan 有独立的 base_url + 专属 API Key（格式不同），
@@ -51,6 +79,8 @@ PROVIDER_BASE_URLS: Dict[str, str] = {
     #   MiniMax M2.7 OpenAI 兼容：https://api.minimaxi.com/v1
     #   同上，base_url 与按量相同，key 不同，单独注册用于区分。
     "minimax_coding":  "https://api.minimaxi.com/v1",
+    "volcengine_coding_plan": "https://ark.cn-beijing.volces.com/api/coding/v3",
+    "byteplus_coding_plan":   "https://ark.ap-southeast.bytepluses.com/api/coding/v3",
 
     # mock provider：仅用于开发和测试，不发起真实网络请求
     "mock":            "http://mock.internal/v1",
@@ -60,21 +90,169 @@ PROVIDER_BASE_URLS: Dict[str, str] = {
 # 厂商元信息：provider → 描述、key 格式提示、是否为 coding plan
 # 用于管理后台展示和创建密钥时的提示信息。
 # ============================================================
-PROVIDER_META: Dict[str, Dict[str, Any]] = {
+BUILTIN_PROVIDER_META: Dict[str, Dict[str, Any]] = {
     "modelscope":    {"label": "ModelScope",           "coding_plan": False, "key_hint": "ms-xxxxx"},
+    "openai":        {"label": "OpenAI",               "coding_plan": False, "key_hint": "sk-xxxxx", "supports_responses": True},
+    "openrouter":    {"label": "OpenRouter",           "coding_plan": False, "key_hint": "sk-or-xxxxx"},
+    "huggingface":   {"label": "Hugging Face",         "coding_plan": False, "key_hint": "hf_xxxxx"},
+    "aihubmix":      {"label": "AiHubMix",             "coding_plan": False, "key_hint": "任意格式"},
     "zhipu":         {"label": "智谱 GLM（按量）",      "coding_plan": False, "key_hint": "任意格式"},
     "zhipu_coding":  {"label": "智谱 GLM Coding Plan", "coding_plan": True,  "key_hint": "Coding Plan 专属 key"},
     "minimax":       {"label": "MiniMax（按量）",        "coding_plan": False, "key_hint": "任意格式"},
+    "minimax_global":{"label": "MiniMax Global",       "coding_plan": False, "key_hint": "任意格式"},
+    "minimax_anthropic":{"label": "MiniMax Anthropic", "coding_plan": False, "key_hint": "任意格式"},
     "minimax_coding":{"label": "MiniMax Coding Plan",  "coding_plan": True,  "key_hint": "Coding Plan 专属 key"},
     "alibaba":       {"label": "阿里云百炼（按量）",     "coding_plan": False, "key_hint": "sk-xxxxx"},
+    "dashscope":     {"label": "DashScope",            "coding_plan": False, "key_hint": "sk-xxxxx"},
     "alibaba_coding":{"label": "阿里云百炼 Coding Plan","coding_plan": True,  "key_hint": "sk-sp-xxxxx"},
     "tencent":       {"label": "腾讯混元",              "coding_plan": False, "key_hint": "任意格式"},
     "baidu":         {"label": "百度千帆",              "coding_plan": False, "key_hint": "任意格式"},
+    "qianfan":       {"label": "Qianfan",              "coding_plan": False, "key_hint": "任意格式"},
     "kimi":          {"label": "Kimi（月之暗面）",      "coding_plan": False, "key_hint": "任意格式"},
+    "moonshot":      {"label": "Moonshot",             "coding_plan": False, "key_hint": "任意格式"},
     "deepseek":      {"label": "DeepSeek",             "coding_plan": False, "key_hint": "任意格式"},
     "siliconflow":   {"label": "SiliconFlow",          "coding_plan": False, "key_hint": "任意格式"},
+    "gemini":        {"label": "Gemini",               "coding_plan": False, "key_hint": "AIza..."},
+    "mistral":       {"label": "Mistral AI",           "coding_plan": False, "key_hint": "任意格式"},
+    "volcengine":    {"label": "火山引擎",              "coding_plan": False, "key_hint": "任意格式"},
+    "volcengine_coding_plan": {"label": "火山引擎 Coding Plan", "coding_plan": True, "key_hint": "Coding Plan 专属 key"},
+    "byteplus":      {"label": "BytePlus",             "coding_plan": False, "key_hint": "任意格式"},
+    "byteplus_coding_plan": {"label": "BytePlus Coding Plan", "coding_plan": True, "key_hint": "Coding Plan 专属 key"},
+    "stepfun":       {"label": "StepFun",              "coding_plan": False, "key_hint": "任意格式"},
+    "xiaomi_mimo":   {"label": "Xiaomi MiMo",          "coding_plan": False, "key_hint": "任意格式"},
+    "longcat":       {"label": "LongCat",              "coding_plan": False, "key_hint": "任意格式"},
+    "groq":          {"label": "Groq",                 "coding_plan": False, "key_hint": "gsk_..."},
+    "anthropic":     {"label": "Anthropic",            "coding_plan": False, "key_hint": "sk-ant-xxxxx"},
     "mock":          {"label": "Mock（测试）",          "coding_plan": False, "key_hint": "mock[:slow|:fail|:fail_rate=N]"},
 }
+
+BUILTIN_ANTHROPIC_COMPAT_PROVIDERS = {"anthropic", "minimax_anthropic"}
+
+_PROVIDER_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
+_BLOCKED_HOSTS = {
+    "localhost",
+    "metadata",
+    "metadata.google.internal",
+    "169.254.169.254",
+}
+_BLOCKED_HOST_SUFFIXES = (
+    ".localhost",
+    ".local",
+)
+
+
+def _normalize_provider_name(provider: str) -> str:
+    name = provider.strip().lower()
+    if not _PROVIDER_NAME_RE.fullmatch(name):
+        raise ValueError(
+            f"非法 provider 名称: {provider!r}，仅允许小写字母、数字、下划线和中划线"
+        )
+    return name
+
+
+def _validate_public_https_base_url(provider: str, base_url: str) -> str:
+    url = str(base_url).strip().rstrip("/")
+    parsed = urlparse(url)
+
+    if parsed.scheme != "https":
+        raise ValueError(f"provider '{provider}' 的 base_url 必须使用 https")
+    if not parsed.hostname:
+        raise ValueError(f"provider '{provider}' 的 base_url 缺少 hostname")
+    if parsed.username or parsed.password:
+        raise ValueError(f"provider '{provider}' 的 base_url 不允许包含用户名或密码")
+    if parsed.params or parsed.query or parsed.fragment:
+        raise ValueError(f"provider '{provider}' 的 base_url 不允许包含 params/query/fragment")
+
+    hostname = parsed.hostname.rstrip(".").lower()
+    if hostname in _BLOCKED_HOSTS or hostname.endswith(_BLOCKED_HOST_SUFFIXES):
+        raise ValueError(f"provider '{provider}' 的 base_url 指向受保护主机: {hostname}")
+
+    try:
+        ip = ipaddress.ip_address(hostname)
+    except ValueError:
+        return url
+
+    if (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or ip.is_reserved
+        or ip.is_unspecified
+    ):
+        raise ValueError(f"provider '{provider}' 的 base_url 指向非公网 IP: {hostname}")
+
+    return url
+
+
+def _load_configured_provider_catalog() -> tuple[Dict[str, str], Dict[str, Dict[str, Any]], set[str]]:
+    """
+    合并 config.yaml provider_catalog.providers。
+
+    配置格式：
+      provider_catalog:
+        providers:
+          provider_name:
+            enabled: true
+            base_url: https://example.com/v1
+            label: Example
+            protocol: openai | anthropic
+            coding_plan: false
+            key_hint: sk-xxxxx
+            supports_responses: false
+    """
+    base_urls = dict(BUILTIN_PROVIDER_BASE_URLS)
+    meta = {provider: dict(value) for provider, value in BUILTIN_PROVIDER_META.items()}
+    anthropic_providers = set(BUILTIN_ANTHROPIC_COMPAT_PROVIDERS)
+
+    configured = settings.provider_catalog.get("providers", {})
+    if not configured:
+        return base_urls, meta, anthropic_providers
+    if not isinstance(configured, dict):
+        raise ValueError("provider_catalog.providers 必须是对象")
+
+    for raw_provider, raw_cfg in configured.items():
+        provider = _normalize_provider_name(str(raw_provider))
+        if raw_cfg is None:
+            raw_cfg = {}
+        if not isinstance(raw_cfg, dict):
+            raise ValueError(f"provider_catalog.providers.{provider} 必须是对象")
+
+        enabled = raw_cfg.get("enabled", True)
+        if enabled is False:
+            base_urls.pop(provider, None)
+            meta.pop(provider, None)
+            anthropic_providers.discard(provider)
+            continue
+
+        if "base_url" not in raw_cfg:
+            if provider not in base_urls:
+                raise ValueError(f"新增 provider '{provider}' 必须配置 base_url")
+        else:
+            base_urls[provider] = _validate_public_https_base_url(provider, raw_cfg["base_url"])
+
+        provider_meta = dict(meta.get(provider, {}))
+        for key in ("label", "coding_plan", "key_hint", "supports_responses"):
+            if key in raw_cfg:
+                provider_meta[key] = raw_cfg[key]
+        meta[provider] = provider_meta
+
+        protocol = raw_cfg.get("protocol", "anthropic" if provider in anthropic_providers else "openai")
+        if protocol not in {"openai", "anthropic"}:
+            raise ValueError(f"provider '{provider}' 的 protocol 仅支持 openai / anthropic")
+        if protocol == "anthropic":
+            anthropic_providers.add(provider)
+        else:
+            anthropic_providers.discard(provider)
+
+    return base_urls, meta, anthropic_providers
+
+
+try:
+    PROVIDER_BASE_URLS, PROVIDER_META, ANTHROPIC_COMPAT_PROVIDERS = _load_configured_provider_catalog()
+except ValueError as e:
+    logger.error("provider_catalog 配置非法，服务启动终止: %s", e)
+    raise
 
 
 class RouterService:
@@ -185,6 +363,10 @@ class RouterService:
             from app.providers.mock import MockProvider
             return MockProvider(api_key=api_key)
 
+        if provider in ANTHROPIC_COMPAT_PROVIDERS:
+            from app.providers.anthropic import AnthropicProvider
+            return AnthropicProvider(api_key=api_key, base_url=base_url)
+
         from app.providers.modelscope import ModelScopeProvider
         return ModelScopeProvider(api_key=api_key, base_url=base_url)
 
@@ -239,9 +421,16 @@ class RouterService:
                 "base_url": base_url,
                 "coding_plan": meta.get("coding_plan", False),
                 "key_hint": meta.get("key_hint", ""),
+                "supports_responses": meta.get("supports_responses", False),
                 "price": RouterService.get_model_price(provider + "/"),
             })
         return result
+
+    @staticmethod
+    def supports_responses(provider: str) -> bool:
+        """检查 provider 是否支持 OpenAI Responses API。"""
+        meta = PROVIDER_META.get(provider.lower(), {})
+        return bool(meta.get("supports_responses", False))
 
 
 # ============================================================

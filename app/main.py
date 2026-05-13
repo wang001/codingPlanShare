@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from app.api import auth, users, keys, points, chat, embeddings, admin
+from app.api import auth, users, keys, points, chat, embeddings, responses, admin
 from app.utils.background_tasks import background_tasks
 
 
@@ -35,6 +35,7 @@ app.include_router(keys.router,       prefix="/api/v1/keys",       tags=["密钥
 app.include_router(points.router,     prefix="/api/v1/points",     tags=["积分"])
 app.include_router(chat.router,       prefix="/api/v1/chat",       tags=["聊天"])
 app.include_router(embeddings.router, prefix="/api/v1/embeddings", tags=["嵌入"])
+app.include_router(responses.router,  prefix="/api/v1/responses",  tags=["Responses"])
 app.include_router(admin.router,      prefix="/api/admin",         tags=["管理员"])
 
 

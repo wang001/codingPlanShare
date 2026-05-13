@@ -23,8 +23,8 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons'
 import type { ColumnsType } from 'antd/es/table'
-import { getKeys, createKey, updateKey, deleteKey } from '../api/keys'
-import type { Key, KeyProvider } from '../types'
+import { getKeys, createKey, updateKey, deleteKey, getKeyProviders } from '../api/keys'
+import type { Key, KeyProvider, ProviderInfo } from '../types'
 import {
   formatTimestamp,
   getKeyStatusLabel,
@@ -32,16 +32,9 @@ import {
   getProviderLabel,
 } from '../utils'
 
-const providerOptions: { label: string; value: KeyProvider }[] = [
-  { label: '智谱', value: 'zhipu' },
-  { label: 'MiniMax', value: 'minimax' },
-  { label: '阿里云', value: 'alibaba' },
-  { label: '腾讯云', value: 'tencent' },
-  { label: '百度', value: 'baidu' },
-]
-
 const KeysPage: React.FC = () => {
   const [keys, setKeys] = useState<Key[]>([])
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [loading, setLoading] = useState(true)
   const [actionLoading, setActionLoading] = useState<number | null>(null)
 
@@ -63,7 +56,29 @@ const KeysPage: React.FC = () => {
     }
   }
 
-  useEffect(() => { fetchKeys() }, [])
+  const fetchProviders = async () => {
+    try {
+      const data = await getKeyProviders()
+      setProviders(data)
+    } catch {
+      message.error('获取厂商列表失败')
+    }
+  }
+
+  useEffect(() => {
+    fetchKeys()
+    fetchProviders()
+  }, [])
+
+  const providerOptions = providers.map(provider => ({
+    label: provider.coding_plan ? `${provider.label}（Coding Plan）` : provider.label,
+    value: provider.provider as KeyProvider,
+  }))
+
+  const providerLabelMap = providers.reduce<Record<string, string>>((map, provider) => {
+    map[provider.provider] = provider.label
+    return map
+  }, {})
 
   // 平台密钥和厂商密钥分开
   const platformKeys = keys.filter(k => k.key_type === 1 && k.status !== 1)
@@ -229,7 +244,7 @@ const KeysPage: React.FC = () => {
       dataIndex: 'provider',
       key: 'provider',
       width: 100,
-      render: (provider: string | null) => getProviderLabel(provider),
+      render: (provider: string | null) => provider ? providerLabelMap[provider] || getProviderLabel(provider) : '-',
     },
     {
       title: '状态',
@@ -396,7 +411,9 @@ const KeysPage: React.FC = () => {
               >
                 <Select
                   placeholder="请选择厂商"
+                  showSearch
                   options={providerOptions}
+                  optionFilterProp="label"
                 />
               </Form.Item>
               <Form.Item

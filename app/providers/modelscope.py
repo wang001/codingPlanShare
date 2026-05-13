@@ -81,3 +81,14 @@ class ModelScopeProvider(BaseProvider):
             response = await client.post(url, json=payload)
             response.raise_for_status()
             return response.json()
+
+    async def responses(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """OpenAI Responses API 透传。"""
+        url = f"{self.base_url}/responses"
+        async with httpx.AsyncClient(headers=self.headers, timeout=_TIMEOUT) as client:
+            response = await client.post(url, json=payload)
+            response.raise_for_status()
+            try:
+                return response.json()
+            except Exception as e:
+                raise VendorResponseError(f"响应体解析失败: {e}，原始内容: {response.text[:200]}")
