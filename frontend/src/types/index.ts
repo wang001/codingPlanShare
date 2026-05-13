@@ -46,7 +46,17 @@ export interface Key {
   encrypted_key?: string
 }
 
-export type KeyProvider = 'zhipu' | 'minimax' | 'alibaba' | 'tencent' | 'baidu'
+export type KeyProvider = string
+
+export interface ProviderInfo {
+  provider: string
+  label: string
+  base_url: string
+  coding_plan: boolean
+  key_hint: string
+  supports_responses: boolean
+  price: number
+}
 
 export interface CreateKeyPayload {
   name: string

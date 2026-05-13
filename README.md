@@ -63,6 +63,11 @@ Turn idle API quota into revenue. One unified OpenAI-compatible endpoint for eve
 | 厂商 | 模型示例 | 调用前缀 |
 |------|---------|---------|
 | ModelScope | moonshotai/Kimi-K2.5、Qwen 系列 | `modelscope/` |
+| OpenAI | gpt-4.1、gpt-4o | `openai/` |
+| OpenRouter | anthropic/claude、openai/gpt 等 | `openrouter/` |
+| Hugging Face | 多种托管模型 | `huggingface/` |
+| Anthropic | claude-sonnet 系列 | `anthropic/` |
+| Google Gemini | gemini 系列 | `gemini/` |
 | 智谱 AI | GLM-4 | `zhipu/` |
 | MiniMax | abab6.5 | `minimax/` |
 | 阿里云百炼 | qwen-turbo | `alibaba/` |
@@ -70,8 +75,11 @@ Turn idle API quota into revenue. One unified OpenAI-compatible endpoint for eve
 | 百度千帆 | ernie-4.0 | `baidu/` |
 | DeepSeek | deepseek-chat | `deepseek/` |
 | SiliconFlow | 多种开源模型 | `siliconflow/` |
+| 其他 OpenAI-compatible 网关 | Mistral、Groq、火山、BytePlus、StepFun 等 | 见 `/api/v1/keys/providers` |
 
 > **模型格式**：`provider/真实模型名`，例如 `model: "modelscope/moonshotai/Kimi-K2.5"`，第一段是 provider，后面是真实模型名。
+>
+> **Responses API**：OpenAI Responses API 使用独立入口 `POST /api/v1/responses`，模型格式同样为 `openai/真实模型名`，例如 `openai/gpt-4.1`。
 
 ---
 
@@ -156,6 +164,23 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
+Responses API 使用独立入口：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    api_key="你的平台密钥",
+    base_url="http://localhost:3000/api/v1",
+)
+
+response = client.responses.create(
+    model="openai/gpt-4.1",
+    input="你好！"
+)
+print(response.output_text)
+```
+
 ---
 
 ## ⚙️ 配置说明
@@ -202,7 +227,24 @@ timeout:
 key_management:
   max_retry: 1          # 厂商失败最大重试次数
   cool_down_period: 7200  # 超限冷却时间（秒）
+
+# 厂商白名单扩展：内置 provider 可直接用，这里只写覆盖/新增/禁用项
+provider_catalog:
+  providers:
+    my_gateway:
+      enabled: true
+      base_url: "https://api.example.com/v1"
+      label: "My Gateway"
+      protocol: "openai"          # openai / anthropic
+      coding_plan: false
+      key_hint: "sk-xxxxx"
+      supports_responses: false
+    # 禁用内置 provider：
+    # groq:
+    #   enabled: false
 ```
+
+自定义 `base_url` 会做 SSRF 防护校验：必须是 `https://`，且不能指向 `localhost`、内网 IP、link-local、metadata 等非公网地址。
 
 > 敏感值（`ENCRYPTION_KEY`、`JWT_SECRET`、`DB_USER`、`DB_PASSWORD`）通过环境变量或 `.env` 文件注入，不要提交到 Git。
 
@@ -305,10 +347,27 @@ codingPlanShare/
 
 ---
 
+## ✅ 测试与验证
+
+```bash
+# 后端全量测试（离线，不依赖真实厂商 API Key）
+python -m pytest -q
+
+# provider / Responses API 相关回归测试
+python -m pytest tests/test_provider.py tests/test_provider_catalog.py -q
+
+# 前端构建
+cd frontend && npm install && npm run build
+```
+
+---
+
 ## 🗺️ Roadmap
 
 - [ ] 按 token 计费（当前按次，固定 10 积分/次）
-- [ ] 更多厂商支持（Anthropic、Google 等）
+- [x] 更多远程厂商支持（OpenAI、OpenRouter、Anthropic、Gemini、Mistral、Groq 等）
+- [x] OpenAI Responses API（非流式）
+- [ ] Responses API 流式输出
 - [ ] 用户自助注册
 - [ ] 积分充值 / 提现流程
 - [x] 流式响应（SSE）✅

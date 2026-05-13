@@ -71,3 +71,24 @@ class ChatCompletionResponse(BaseModel):
     model: str = Field(..., description="实际使用的模型名称")
     choices: List[Choice] = Field(..., description="生成结果列表（通常只有 1 个）")
     usage: Usage = Field(..., description="本次请求的 token 用量统计")
+
+
+class ResponsesRequest(BaseModel):
+    model: str = Field(
+        ...,
+        description="模型名称，格式为 `provider/真实模型名`，当前 Responses API 仅开放 openai provider",
+        example="openai/gpt-4.1",
+    )
+    input: Any = Field(..., description="OpenAI Responses API 的 input 字段")
+    stream: Optional[bool] = Field(default=False, description="暂不支持流式 Responses")
+
+    model_config = {
+        "extra": "allow",
+        "json_schema_extra": {
+            "example": {
+                "model": "openai/gpt-4.1",
+                "input": "你好，请用一句话介绍自己。",
+                "max_output_tokens": 500,
+            }
+        },
+    }

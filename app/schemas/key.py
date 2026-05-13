@@ -13,9 +13,11 @@ class ApiKeyCreate(BaseModel):
         default=None,
         description=(
             "厂商标识，key_type=2 时必填，须在系统白名单内（防止 SSRF）。\n"
-            "按量付费通道：modelscope / zhipu / minimax / alibaba / tencent / baidu / kimi / deepseek / siliconflow\n"
+            "按量付费通道：可通过 /api/v1/keys/providers 查询当前完整列表，"
+            "包括 OpenAI、OpenRouter、Hugging Face、Anthropic、Gemini、Moonshot、DeepSeek 等。\n"
             "Coding Plan 专属通道：alibaba_coding（阿里云百炼，key 格式 sk-sp-xxxxx）/ "
-            "zhipu_coding（智谱 GLM Coding Plan）/ minimax_coding（MiniMax Coding Plan）\n"
+            "zhipu_coding（智谱 GLM Coding Plan）/ minimax_coding（MiniMax Coding Plan）/ "
+            "volcengine_coding_plan / byteplus_coding_plan\n"
             "注意：Coding Plan 通道与按量通道 key 不互通，请勿混用。\n"
             "仅测试：mock"
         ),
@@ -47,8 +49,8 @@ class ApiKeyResponse(BaseModel):
         ...,
         description=(
             "厂商标识（仅厂商密钥有值）。"
-            "按量：modelscope / zhipu / minimax / alibaba / tencent / baidu / kimi / deepseek / siliconflow；"
-            "Coding Plan：alibaba_coding / zhipu_coding / minimax_coding；"
+            "完整列表请查询 /api/v1/keys/providers；"
+            "Coding Plan：alibaba_coding / zhipu_coding / minimax_coding / volcengine_coding_plan / byteplus_coding_plan；"
             "测试：mock"
         )
     )

@@ -70,6 +70,7 @@ class Settings:
         self.logging        = self.config.get('logging', {})
         self.key_reward     = self.config.get('key_reward', {})
         self.model_pricing  = self.config.get('model_pricing', {})
+        self.provider_catalog = self.config.get('provider_catalog', {})
 
 
 settings = Settings()

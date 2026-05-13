@@ -53,23 +53,45 @@ flowchart TD
 
 - `modelscope/moonshotai/Kimi-K2.5` → 通过 ModelScope 接口调用 `moonshotai/Kimi-K2.5`
 - `zhipu/glm-4` → 通过智谱接口调用 `glm-4`
+- `openai/gpt-4.1` → 通过 OpenAI 接口调用 `gpt-4.1`
+- `anthropic/claude-sonnet-4-5` → 通过 Anthropic Messages API 调用 `claude-sonnet-4-5`
 
-后端从 `model` 第一段提取 `provider`，从剩余部分提取真实模型名，在 `PROVIDER_BASE_URLS` 白名单中查找对应 `base_url`。
+后端从 `model` 第一段提取 `provider`，从剩余部分提取真实模型名，在合并后的 provider 白名单中查找对应 `base_url`。
 
-**安全策略（SSRF 防护）**：创建厂商密钥时，`provider` 必须在以下白名单内，否则 400 拒绝：
+**安全策略（SSRF 防护）**：创建厂商密钥时，`provider` 必须在后端白名单内，否则 400 拒绝。白名单由代码内置 `BUILTIN_PROVIDER_BASE_URLS` 与 `config.yaml` 中的 `provider_catalog.providers` 合并而来。当前完整列表可通过 `GET /api/v1/keys/providers` 查询，核心支持包括：
 
 | provider | base_url |
 |----------|----------|
 | modelscope | https://api-inference.modelscope.cn/v1 |
+| openai | https://api.openai.com/v1 |
+| openrouter | https://openrouter.ai/api/v1 |
+| huggingface | https://router.huggingface.co/v1 |
+| aihubmix | https://aihubmix.com/v1 |
 | zhipu | https://open.bigmodel.cn/api/paas/v4 |
-| minimax | https://api.minimax.chat/v1 |
+| minimax | https://api.minimaxi.com/v1 |
+| minimax_global | https://api.minimax.io/v1 |
 | alibaba | https://dashscope.aliyuncs.com/compatible-mode/v1 |
+| dashscope | https://dashscope.aliyuncs.com/compatible-mode/v1 |
 | tencent | https://api.hunyuan.cloud.tencent.com/v1 |
 | baidu | https://qianfan.baidubce.com/v2 |
+| qianfan | https://qianfan.baidubce.com/v2 |
 | deepseek | https://api.deepseek.com/v1 |
 | siliconflow | https://api.siliconflow.cn/v1 |
+| kimi | https://api.moonshot.cn/v1 |
+| moonshot | https://api.moonshot.ai/v1 |
+| gemini | https://generativelanguage.googleapis.com/v1beta/openai |
+| mistral | https://api.mistral.ai/v1 |
+| volcengine | https://ark.cn-beijing.volces.com/api/v3 |
+| byteplus | https://ark.ap-southeast.bytepluses.com/api/v3 |
+| stepfun | https://api.stepfun.com/v1 |
+| groq | https://api.groq.com/openai/v1 |
+| anthropic | https://api.anthropic.com/v1 |
 
-所有厂商均使用 OpenAI 兼容格式（`ModelScopeProvider`），无需单独适配器。
+OpenAI-compatible 厂商统一使用 `ModelScopeProvider` 适配器；Anthropic 协议厂商使用 `AnthropicProvider` 适配器，并在服务端标准化为 OpenAI Chat Completions 响应格式。
+
+OpenAI Responses API 不复用 Chat Completions 路径，单独通过 `POST /api/v1/responses` 暴露；当前只对 `supports_responses=true` 的 provider 开放，默认仅 `openai`。
+
+自定义 provider 必须配置公网 `https://` base_url。系统会拒绝 `localhost`、内网 IP、link-local、metadata endpoint、带 query/fragment 的 URL，以避免 SSRF。
 
 ##### 3.1.1.1 普通用户接口
 
@@ -79,11 +101,13 @@ flowchart TD
 | /api/v1/users/me | GET | 获取个人信息 | api/users.py |
 | /api/v1/keys | POST | 创建API密钥 | api/keys.py |
 | /api/v1/keys | GET | 获取密钥列表 | api/keys.py |
+| /api/v1/keys/providers | GET | 查询支持托管的 provider 列表 | api/keys.py |
 | /api/v1/keys/{key_id} | PUT | 更新密钥状态 | api/keys.py |
 | /api/v1/keys/{key_id} | DELETE | 删除密钥 | api/keys.py |
 | /api/v1/points | GET | 获取积分余额 | api/points.py |
 | /api/v1/points/logs | GET | 获取积分明细（query: limit/offset） | api/points.py |
 | /api/v1/chat/completions | POST | 聊天完成接口 | api/chat.py |
+| /api/v1/responses | POST | OpenAI Responses API 入口 | api/responses.py |
 | /api/v1/embeddings | POST | 嵌入接口 | api/embeddings.py |
 
 ##### 3.1.1.2 后端管理接口
@@ -354,6 +378,21 @@ key_management:
   max_retry: 1
   cool_down_period: 7200
 
+# 厂商白名单扩展配置
+provider_catalog:
+  providers:
+    my_gateway:
+      enabled: true
+      base_url: "https://api.example.com/v1"
+      label: "My Gateway"
+      protocol: "openai"        # openai / anthropic
+      coding_plan: false
+      key_hint: "sk-xxxxx"
+      supports_responses: false
+    # 禁用内置 provider：
+    # groq:
+    #   enabled: false
+
 # 日志配置
 logging:
   level: "INFO"
@@ -491,6 +530,24 @@ export JWT_SECRET=your-jwt-secret
 
 ---
 
+#### GET `/api/v1/keys/providers` — 获取支持托管的厂商列表
+
+用于前端「托管厂商密钥」下拉选择，也可供调用方查询当前 provider 白名单。
+
+**响应体**（数组，每项字段如下）
+
+| 字段 | 类型 | 说明 |
+|------|------|------|
+| provider | string | provider 标识，用作模型名前缀和厂商密钥类型 |
+| label | string | 展示名称 |
+| base_url | string | 白名单内固定厂商地址 |
+| coding_plan | boolean | 是否为 Coding Plan 专属通道 |
+| key_hint | string | API Key 格式提示 |
+| supports_responses | boolean | 是否支持 `/api/v1/responses` |
+| price | int | provider 级别默认单次积分 |
+
+---
+
 #### POST `/api/v1/keys` — 创建密钥
 
 **请求体**
@@ -502,7 +559,7 @@ export JWT_SECRET=your-jwt-secret
 | provider | string | 厂商密钥必填 | 厂商标识，见[厂商枚举](#厂商枚举)，须在白名单内 |
 | encrypted_key | string | 厂商密钥必填 | 厂商原始 API Key，服务端加密存储 |
 
-> 安全：`provider` 须在系统白名单（`PROVIDER_BASE_URLS`）内，否则返回 400，防止 SSRF。
+> 安全：`provider` 须在系统合并后的白名单内，否则返回 400。自定义 provider 的 `base_url` 必须通过 HTTPS 与公网地址校验，防止 SSRF。
 
 ---
 
@@ -588,6 +645,26 @@ export JWT_SECRET=your-jwt-secret
 | model | string | 实际使用的模型名 |
 | choices | array | 结果列表，每项包含 `index`、`message`（含 `role` 和 `content`）、`finish_reason` |
 | usage | object | token 用量：`prompt_tokens`、`completion_tokens`、`total_tokens` |
+
+---
+
+#### POST `/api/v1/responses` — OpenAI Responses API
+
+> ⚠️ 此接口使用 `api-key: <平台密钥>` Header 认证，**不使用** JWT。
+> 当前仅 `supports_responses=true` 的 provider 可调用，默认仅 `openai`。流式 Responses 暂未开放，`stream=true` 会返回 400。
+
+**请求体**（OpenAI Responses API 透传格式）
+
+| 字段 | 类型 | 必填 | 说明 |
+|------|------|------|------|
+| model | string | ✅ | 模型名称，格式 `provider/真实模型名`，例如 `openai/gpt-4.1` |
+| input | any | ✅ | Responses API 的 `input` 字段 |
+| stream | boolean | | 暂不支持，默认 `false` |
+| 其他字段 | any | | 透传给厂商 `/responses`，例如 `max_output_tokens`、`instructions` 等 |
+
+**响应体**
+
+直接返回厂商 Responses API 响应体。平台会从 `usage.input_tokens/output_tokens/total_tokens` 提取用量，写入 `call_logs.prompt_tokens/completion_tokens/total_tokens`。
 
 ---
 
@@ -716,17 +793,34 @@ export JWT_SECRET=your-jwt-secret
 
 #### 厂商枚举（provider 白名单）
 
-| provider 值 | 厂商 | 对应 base_url | mock 可用 |
-|-------------|------|---------------|-----------|
-| `modelscope` | 魔搭社区 | `https://api-inference.modelscope.cn/v1` | ❌ |
-| `zhipu` | 智谱 AI | `https://open.bigmodel.cn/api/paas/v4` | ❌ |
-| `minimax` | MiniMax | `https://api.minimax.chat/v1` | ❌ |
-| `alibaba` | 阿里云百炼 | `https://dashscope.aliyuncs.com/compatible-mode/v1` | ❌ |
-| `tencent` | 腾讯混元 | `https://api.hunyuan.cloud.tencent.com/v1` | ❌ |
-| `baidu` | 百度千帆 | `https://qianfan.baidubce.com/v2` | ❌ |
-| `deepseek` | DeepSeek | `https://api.deepseek.com/v1` | ❌ |
-| `siliconflow` | SiliconFlow | `https://api.siliconflow.cn/v1` | ❌ |
-| `mock` | Mock（测试用）| 不发起真实请求 | ✅ |
+完整 provider 白名单以运行时合并结果为准：代码内置白名单 + `config.yaml` 中 `provider_catalog.providers` 的覆盖/新增/禁用项。可通过 `GET /api/v1/keys/providers` 查询。常用内置值如下：
+
+| provider 值 | 厂商/通道 | 协议 | Responses |
+|-------------|-----------|------|-----------|
+| `modelscope` | ModelScope | OpenAI-compatible | ❌ |
+| `openai` | OpenAI | OpenAI-compatible | ✅ |
+| `openrouter` | OpenRouter | OpenAI-compatible gateway | ❌ |
+| `huggingface` | Hugging Face Router | OpenAI-compatible gateway | ❌ |
+| `aihubmix` | AiHubMix | OpenAI-compatible gateway | ❌ |
+| `zhipu` / `zhipu_coding` | 智谱 GLM | OpenAI-compatible | ❌ |
+| `minimax` / `minimax_coding` / `minimax_global` | MiniMax | OpenAI-compatible | ❌ |
+| `minimax_anthropic` | MiniMax Anthropic | Anthropic-compatible | ❌ |
+| `alibaba` / `dashscope` / `alibaba_coding` | 阿里云百炼 / DashScope | OpenAI-compatible | ❌ |
+| `tencent` | 腾讯混元 | OpenAI-compatible | ❌ |
+| `baidu` / `qianfan` | 百度千帆 | OpenAI-compatible | ❌ |
+| `kimi` / `moonshot` | 月之暗面 | OpenAI-compatible | ❌ |
+| `deepseek` | DeepSeek | OpenAI-compatible | ❌ |
+| `siliconflow` | SiliconFlow | OpenAI-compatible | ❌ |
+| `gemini` | Google Gemini OpenAI endpoint | OpenAI-compatible | ❌ |
+| `mistral` | Mistral AI | OpenAI-compatible | ❌ |
+| `volcengine` / `volcengine_coding_plan` | 火山引擎 | OpenAI-compatible | ❌ |
+| `byteplus` / `byteplus_coding_plan` | BytePlus | OpenAI-compatible | ❌ |
+| `stepfun` | StepFun | OpenAI-compatible | ❌ |
+| `xiaomi_mimo` | Xiaomi MiMo | OpenAI-compatible | ❌ |
+| `longcat` | LongCat | OpenAI-compatible | ❌ |
+| `groq` | Groq | OpenAI-compatible | ❌ |
+| `anthropic` | Anthropic | Anthropic Messages API | ❌ |
+| `mock` | Mock（测试用） | 本地模拟 | ❌ |
 
 > `mock` provider 的 `encrypted_key` 格式控制行为：
 > - `mock` → 正常响应
@@ -972,6 +1066,7 @@ codingPlanShare/
 │   │   ├── keys.py
 │   │   ├── points.py
 │   │   ├── chat.py
+│   │   ├── responses.py
 │   │   ├── embeddings.py
 │   │   └── admin.py
 │   ├── services/
@@ -984,7 +1079,9 @@ codingPlanShare/
 │   ├── providers/
 │   │   ├── __init__.py
 │   │   ├── base.py
-│   │   └── modelscope.py          # 统一 OpenAI 兼容适配器，覆盖所有白名单厂商
+│   │   ├── modelscope.py          # OpenAI-compatible 适配器，覆盖大多数白名单厂商
+│   │   ├── anthropic.py           # Anthropic Messages API 适配器
+│   │   └── mock.py                # 离线测试/开发用 provider
 │   ├── models/
 │   │   ├── __init__.py
 │   │   ├── user.py
@@ -1021,9 +1118,10 @@ codingPlanShare/
 │   ├── test_concurrent_points.py  # 并发积分安全测试
 │   ├── test_chat_bug_fixes.py     # 积分扣减回归测试（Bug1/2/3）
 │   ├── test_model_dump.py
-│   ├── test_chat.py               # 集成测试（需运行中的服务）
-│   ├── test_chat_stream.py        # 流式集成测试（需运行中的服务）
-│   └── test_provider.py           # 厂商适配器测试（需真实 API Key）
+│   ├── test_chat.py               # Chat handler 离线 smoke test
+│   ├── test_chat_stream.py        # 流式 handler 离线 smoke test
+│   ├── test_provider.py           # OpenAI-compatible provider 离线单测
+│   └── test_provider_catalog.py   # provider catalog / Responses API 回归测试
 ├── data/
 │   └── app.db
 ├── config.yaml
@@ -1042,11 +1140,13 @@ sqlalchemy==2.0.48
 pydantic==2.12.4
 pydantic-settings==2.12.0
 python-jose[cryptography]==3.3.0
-passlib==1.7.4
+passlib[bcrypt]==1.7.4
+redis==5.0.1
 cryptography==41.0.7
 pytest==7.4.3
 httpx==0.25.2
 pyyaml==6.0.1
+PyMySQL==1.1.2
 ```
 
 ## 12. 部署方案

@@ -42,6 +42,12 @@ def create_api_key(request: ApiKeyCreate, current_user: User = Depends(get_curre
             detail=str(e)
         )
 
+@router.get("/providers", response_model=List[dict])
+def list_key_providers(current_user: User = Depends(get_current_user)):
+    """返回当前支持托管的厂商 provider 列表"""
+    from app.services.router_service import RouterService
+    return RouterService.list_providers()
+
 @router.get("", response_model=List[ApiKeyResponse])
 def get_api_keys(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
     """获取密钥列表"""

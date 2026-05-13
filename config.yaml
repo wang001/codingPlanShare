@@ -34,6 +34,31 @@ key_management:
   cool_down_period: 7200 # 密钥超限时的冷却时间，单位：秒，暂时没有实现
   max_concurrency: 1 # 每个密钥的最大并发数，暂时没有实现
 
+# 厂商白名单扩展配置
+# 内置白名单定义在 app/services/router_service.py，可在这里覆盖、禁用或追加 provider。
+# 安全限制：自定义 base_url 必须是 https，且不能指向 localhost、内网 IP、link-local、
+# metadata 等非公网地址，避免 SSRF。
+provider_catalog:
+  providers:
+    # 示例：添加 OpenAI-compatible 网关
+    # my_gateway:
+    #   enabled: true
+    #   base_url: "https://api.example.com/v1"
+    #   label: "My Gateway"
+    #   protocol: "openai"        # openai / anthropic
+    #   coding_plan: false
+    #   key_hint: "sk-xxxxx"
+    #   supports_responses: false
+    #
+    # 示例：覆盖内置 provider 展示名或地址
+    # openrouter:
+    #   base_url: "https://openrouter.ai/api/v1"
+    #   label: "OpenRouter"
+    #
+    # 示例：禁用某个内置 provider
+    # groq:
+    #   enabled: false
+
 # 模型差异计费配置
 # 查找顺序（优先级从高到低）：
 #   1. models.<provider/model>  精确模型匹配
@@ -44,17 +69,37 @@ model_pricing:
   default: 10                        # 全局兜底
   providers:
     modelscope:    10
+    openai:        15
+    openrouter:    12
+    huggingface:   10
+    aihubmix:      10
     zhipu:         10
     zhipu_coding:  8                 # coding plan 套餐均摊，略低
     minimax:       12
+    minimax_global: 12
+    minimax_anthropic: 12
     minimax_coding: 8
     alibaba:       10
+    dashscope:     10
     alibaba_coding: 8
     tencent:       10
     baidu:         8
+    qianfan:       8
     kimi:          20                # kimi-k2.5 成本较高
+    moonshot:      20
     deepseek:      8
     siliconflow:   6
+    gemini:        10
+    mistral:       10
+    volcengine:    10
+    volcengine_coding_plan: 8
+    byteplus:      10
+    byteplus_coding_plan: 8
+    stepfun:       10
+    xiaomi_mimo:   10
+    longcat:       10
+    groq:          8
+    anthropic:     15
     mock:          10
   models:
     "zhipu/glm-4.5-air":            3
